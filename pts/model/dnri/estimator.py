@@ -80,6 +80,7 @@ class DNRIEstimator(PyTorchLightningEstimator):
         trainer_kwargs: Optional[Dict[str, Any]] = None,
         train_sampler: Optional[InstanceSampler] = None,
         validation_sampler: Optional[InstanceSampler] = None,
+        num_edges: int = 10,
     ) -> None:
         default_trainer_kwargs = {
             "max_epochs": 100,
@@ -118,6 +119,9 @@ class DNRIEstimator(PyTorchLightningEstimator):
         self.cell_type = cell_type
         self.num_parallel_samples = num_parallel_samples
         self.dropout_rate = dropout_rate
+
+        # for sparse message passing
+        self.num_edges=num_edges
 
         self.embedding_dimension = (
             embedding_dimension
@@ -307,6 +311,7 @@ class DNRIEstimator(PyTorchLightningEstimator):
             skip_first_edge_type=self.skip_first_edge_type,
             gumbel_temp=self.gumbel_temp,
             num_parallel_samples=self.num_parallel_samples,
+            num_edges=self.num_edges,
         )
         return DNRILightningModule(
             model=model,

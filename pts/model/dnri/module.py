@@ -19,12 +19,20 @@ def encode_onehot(labels):
     return labels_onehot
 
 
+def encode_onehot_mod(labels, target_dim):
+    labels_onehot = np.zeros((target_dim, len(labels)))
+    for i in range(len(labels)):
+        labels_onehot[labels[i],i] = 1
+    return labels_onehot
+
+
 class DNRI_Encoder(nn.Module):
     def __init__(
         self,
         target_dim,
         input_size,
         mlp_hidden_size,
+        edges,
         rnn_hidden_size=None,
         num_edge_types=2,
         save_eval_memory=False,
@@ -38,12 +46,32 @@ class DNRI_Encoder(nn.Module):
         self.cell_type = cell_type
 
         # fully connected graph O(N^2) space
-        edges = np.ones(target_dim) - np.eye(target_dim)
-        self.send_edges = np.where(edges)[0]
-        self.recv_edges = np.where(edges)[1]
+        # edges = np.ones(target_dim) - np.eye(target_dim)
+        # self.send_edges = np.where(edges)[0]
+        # self.recv_edges = np.where(edges)[1]
+        
+        # self.register_buffer(
+        #     "edge2node_mat", torch.Tensor(encode_onehot(self.recv_edges).transpose())
+        # )
+
+        # TODO: sparsify graph and test different sparsity levels
+
+        num_edges = 10
+        self.send_edges = edges[0]
+        self.recv_edges = edges[1]
+
         self.register_buffer(
-            "edge2node_mat", torch.Tensor(encode_onehot(self.recv_edges).transpose())
+            "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim))
         )
+
+        # num_edges = 10
+        # self.send_edges = np.random.permutation(target_dim)[:num_edges]
+        # self.recv_edges = np.random.permutation(target_dim)[:num_edges]
+
+        # self.register_buffer(
+        #     "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim))
+        # )
+
 
         self.save_eval_memory = save_eval_memory
 
@@ -84,16 +112,27 @@ class DNRI_Encoder(nn.Module):
     def forward(self, inputs, prior_state=None):
         #  input: [B, T, target_dim, features_per_variate]
 
+        # print(self.edge2node_mat.shape)
+        # print(self.recv_edges, self.target_dim)
+
         x = inputs.transpose(2, 1).contiguous()  # [B, T, D, F] -> [B, D, T, F]
+        # print(x.shape)
         x = self.mlp_1(x)  # [B, D, T, F]
+        # print(x.shape)
         x = self.node2edge(x)  # [B, D^2, T, F*2]
+        # print(x.shape)
         x = self.mlp_2(x)  # [B, D^2, T, F]
+        # print(x.shape)
         x_skip = x
 
         x = self.edge2node(x)  # [B, D^2, T, F] -> [B, D, T, F]
+        # print(x.shape)
         x = self.mlp_3(x)  # [B, D, T, F]
+        # print(x.shape)
         x = self.node2edge(x)  # [B, D^2, T, F*2]
+        # print(x.shape)
         x = torch.cat((x, x_skip), dim=-1)  # [B, D^2, T, F*3]
+        # print(x.shape)
         x = self.mlp_4(x)  # [B, D^2, T, F]
 
         old_shape = x.shape
@@ -133,6 +172,7 @@ class DNRI_Decoder(nn.Module):
         dropout_rate,
         distr_output,
         gumbel_temp,
+        edges,
         num_edge_types=2,
     ):
         super().__init__()
@@ -167,12 +207,19 @@ class DNRI_Decoder(nn.Module):
             decoder_hidden * self.target_dim
         )
 
-        edges = np.ones(target_dim) - np.eye(target_dim)
-        self.send_edges = np.where(edges)[0]
-        self.recv_edges = np.where(edges)[1]
+        # for sparse message passing
+        self.send_edges = edges[0]
+        self.recv_edges = edges[1]
         self.register_buffer(
-            "edge2node_mat", torch.Tensor(encode_onehot(self.recv_edges))
+            "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim)).T
         )
+
+        # edges = np.ones(target_dim) - np.eye(target_dim)
+        # self.send_edges = np.where(edges)[0]
+        # self.recv_edges = np.where(edges)[1]
+        # self.register_buffer(
+        #     "edge2node_mat", torch.Tensor(encode_onehot(self.recv_edges))
+        # )
 
     def get_initial_hidden(self, inputs_size, device):
         return torch.zeros(
@@ -260,6 +307,8 @@ class DNRIModel(nn.Module):
         num_edge_types=2,
         scaling: bool = True,
         num_parallel_samples: int = 100,
+        # for sparse message passing
+        num_edges: int = 10,
     ):
         super().__init__()
 
@@ -283,6 +332,11 @@ class DNRIModel(nn.Module):
 
         input_size = self._number_of_features + len(self.lags_seq)
 
+        # for sparse message passing
+        send_edges = np.random.permutation(target_dim)[:num_edges]
+        recv_edges = np.random.permutation(target_dim)[:num_edges]
+        edges = [send_edges, recv_edges]
+
         # input to the encoder has to be [B, T, D, F]
         # but gluonts transformations return [B, T, D*F] -> so need to reshape to [B, T, D, F]
         self.encoder = DNRI_Encoder(
@@ -291,6 +345,7 @@ class DNRIModel(nn.Module):
             mlp_hidden_size=mlp_hidden_size,
             rnn_hidden_size=rnn_hidden_size,
             cell_type=cell_type,
+            edges=edges,
         )
 
         self.decoder = DNRI_Decoder(
@@ -302,6 +357,7 @@ class DNRIModel(nn.Module):
             distr_output=distr_output,
             num_edge_types=num_edge_types,
             gumbel_temp=gumbel_temp,
+            edges=edges,
         )
 
         self.embedder = FeatureEmbedder(
