@@ -26,6 +26,10 @@ def encode_onehot_mod(labels, target_dim):
     return labels_onehot
 
 
+def encode_onehot_sparse(labels, target_dim):
+    return torch.sparse_coo_tensor([labels, range(len(labels))], torch.ones(len(labels)), (target_dim, len(labels)))
+
+
 class DNRI_Encoder(nn.Module):
     def __init__(
         self,
@@ -33,6 +37,7 @@ class DNRI_Encoder(nn.Module):
         input_size,
         mlp_hidden_size,
         edges,
+        num_layers,
         rnn_hidden_size=None,
         num_edge_types=2,
         save_eval_memory=False,
@@ -44,19 +49,8 @@ class DNRI_Encoder(nn.Module):
         self.target_dim = target_dim
         self.num_edge_types = num_edge_types
         self.cell_type = cell_type
+        self.num_layers = num_layers
 
-        # fully connected graph O(N^2) space
-        # edges = np.ones(target_dim) - np.eye(target_dim)
-        # self.send_edges = np.where(edges)[0]
-        # self.recv_edges = np.where(edges)[1]
-        
-        # self.register_buffer(
-        #     "edge2node_mat", torch.Tensor(encode_onehot(self.recv_edges).transpose())
-        # )
-
-        # TODO: sparsify graph and test different sparsity levels
-
-        num_edges = 10
         self.send_edges = edges[0]
         self.recv_edges = edges[1]
 
@@ -64,21 +58,17 @@ class DNRI_Encoder(nn.Module):
             "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim))
         )
 
-        # num_edges = 10
-        # self.send_edges = np.random.permutation(target_dim)[:num_edges]
-        # self.recv_edges = np.random.permutation(target_dim)[:num_edges]
-
-        # self.register_buffer(
-        #     "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim))
-        # )
-
-
         self.save_eval_memory = save_eval_memory
 
-        self.mlp_1 = MLP(input_size, [mlp_hidden_size, mlp_hidden_size])
-        self.mlp_2 = MLP(mlp_hidden_size * 2, [mlp_hidden_size, mlp_hidden_size])
-        self.mlp_3 = MLP(mlp_hidden_size, [mlp_hidden_size, mlp_hidden_size])
-        self.mlp_4 = MLP(mlp_hidden_size * 3, [mlp_hidden_size, mlp_hidden_size])
+        self.mlp_in = MLP(input_size, [mlp_hidden_size, mlp_hidden_size])
+        
+        self.mlp_edge_list = nn.ModuleList()
+        self.mlp_node_list = nn.ModuleList()
+        for _ in range(num_layers):
+            self.mlp_edge_list.append(MLP(mlp_hidden_size * 2, [mlp_hidden_size, mlp_hidden_size]))
+            self.mlp_node_list.append(MLP(mlp_hidden_size, [mlp_hidden_size, mlp_hidden_size]))
+        
+        self.mlp_out = MLP(mlp_hidden_size * 3, [mlp_hidden_size, mlp_hidden_size])
 
         if rnn_hidden_size is None:
             rnn_hidden_size = mlp_hidden_size
@@ -103,37 +93,38 @@ class DNRI_Encoder(nn.Module):
 
     def edge2node(self, edge_embeddings):
         old_shape = edge_embeddings.shape
+        # dense message passing
         tmp_embeddings = edge_embeddings.view(old_shape[0], old_shape[1], -1)
         incoming = torch.matmul(self.edge2node_mat, tmp_embeddings).view(
             old_shape[0], -1, old_shape[2], old_shape[3]
         )
+        
+        # # sparse message passing
+        # # TODO: make optional
+        # tmp_embeddings = edge_embeddings.view(len(self.recv_edges), -1)
+        # incoming = torch.sparse.mm(self.edge2node_mat, tmp_embeddings).view(
+        #     old_shape[0], -1, old_shape[2], old_shape[3]
+        # )
         return incoming / (self.target_dim - 1)  # average
 
     def forward(self, inputs, prior_state=None):
         #  input: [B, T, target_dim, features_per_variate]
-
-        # print(self.edge2node_mat.shape)
-        # print(self.recv_edges, self.target_dim)
-
         x = inputs.transpose(2, 1).contiguous()  # [B, T, D, F] -> [B, D, T, F]
-        # print(x.shape)
-        x = self.mlp_1(x)  # [B, D, T, F]
-        # print(x.shape)
+        x = self.mlp_in(x)  # [B, D, T, F]
+        
+        x_skip_list = []
+        for k in range(self.num_layers):
+            x = self.node2edge(x)  # [B, D^2, T, F*2]
+            x = self.mlp_edge_list[k](x)  # [B, D^2, T, F]
+            x_skip_list.append(x)
+            
+            x = self.edge2node(x)  # [B, D^2, T, F] -> [B, D, T, F]
+            x = self.mlp_node_list[k](x)  # [B, D, T, F]
+        
         x = self.node2edge(x)  # [B, D^2, T, F*2]
-        # print(x.shape)
-        x = self.mlp_2(x)  # [B, D^2, T, F]
-        # print(x.shape)
-        x_skip = x
-
-        x = self.edge2node(x)  # [B, D^2, T, F] -> [B, D, T, F]
-        # print(x.shape)
-        x = self.mlp_3(x)  # [B, D, T, F]
-        # print(x.shape)
-        x = self.node2edge(x)  # [B, D^2, T, F*2]
-        # print(x.shape)
-        x = torch.cat((x, x_skip), dim=-1)  # [B, D^2, T, F*3]
-        # print(x.shape)
-        x = self.mlp_4(x)  # [B, D^2, T, F]
+        x = torch.cat((x, x_skip_list[0]), dim=-1)  # [B, D^2, T, F*3]
+        
+        x = self.mlp_out(x)  # [B, D^2, T, F]
 
         old_shape = x.shape
         timesteps = old_shape[2]
@@ -173,30 +164,41 @@ class DNRI_Decoder(nn.Module):
         distr_output,
         gumbel_temp,
         edges,
+        num_layers,
         num_edge_types=2,
     ):
         super().__init__()
 
         self.target_dim = target_dim
+        self.num_layers = num_layers
         self.num_edge_types = num_edge_types
         self.msg_out_shape = decoder_hidden
         self.skip_first_edge_type = skip_first_edge_type
         self.dropout_rate = dropout_rate
         self.gumbel_temp = gumbel_temp
 
-        self.msg_fc1 = nn.ModuleList(
-            [
-                nn.Linear(2 * decoder_hidden, decoder_hidden)
-                for _ in range(num_edge_types)
-            ]
-        )
-        self.msg_fc2 = nn.ModuleList(
-            [nn.Linear(decoder_hidden, decoder_hidden) for _ in range(num_edge_types)]
-        )
+        self.msg_fc1_list = nn.ModuleList()
+        self.msg_fc2_list = nn.ModuleList()
+        for _ in range(num_layers):   
+            self.msg_fc1_list.append(
+                nn.ModuleList(
+                    [
+                        nn.Linear(2 * decoder_hidden, decoder_hidden)
+                        for _ in range(num_edge_types)
+                    ]
+                )
+            )
+            
+            self.msg_fc2_list.append(
+                nn.ModuleList(
+                    [nn.Linear(decoder_hidden, decoder_hidden) for _ in range(num_edge_types)]
+                )
+            )
 
-        self.hidden_r = nn.Linear(decoder_hidden, decoder_hidden, bias=False)
-        self.hidden_i = nn.Linear(decoder_hidden, decoder_hidden, bias=False)
-        self.hidden_h = nn.Linear(decoder_hidden, decoder_hidden, bias=False)
+        # for skip connection
+        self.hidden_r = nn.Linear(num_layers * decoder_hidden, decoder_hidden, bias=False)
+        self.hidden_i = nn.Linear(num_layers * decoder_hidden, decoder_hidden, bias=False)
+        self.hidden_h = nn.Linear(num_layers * decoder_hidden, decoder_hidden, bias=False)
 
         self.input_r = nn.Linear(input_size, decoder_hidden, bias=True)
         self.input_i = nn.Linear(input_size, decoder_hidden, bias=True)
@@ -207,18 +209,17 @@ class DNRI_Decoder(nn.Module):
             decoder_hidden * self.target_dim
         )
 
-        # for sparse message passing
+        
         self.send_edges = edges[0]
         self.recv_edges = edges[1]
+        
         self.register_buffer(
-            "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim)).T
+            "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim))
         )
-
-        # edges = np.ones(target_dim) - np.eye(target_dim)
-        # self.send_edges = np.where(edges)[0]
-        # self.recv_edges = np.where(edges)[1]
+        
+        # # for sparse message passing
         # self.register_buffer(
-        #     "edge2node_mat", torch.Tensor(encode_onehot(self.recv_edges))
+        #     "edge2node_mat", encode_onehot_sparse(self.recv_edges, target_dim)
         # )
 
     def get_initial_hidden(self, inputs_size, device):
@@ -233,40 +234,58 @@ class DNRI_Decoder(nn.Module):
             tau=self.gumbel_temp,
             hard=hard_sample,
         ).view(old_shape)
+        
+        old_shape = hidden.shape
+        hidden_ = hidden
+        
+        # for skip connection
+        agg_msgs_list = []
+        
+        for k in range(self.num_layers):
+            # node2edge
+            receivers = hidden_[:, self.recv_edges, ...]
+            senders = hidden_[:, self.send_edges, ...]
 
-        # node2edge
-        receivers = hidden[:, self.recv_edges, ...]
-        senders = hidden[:, self.send_edges, ...]
+            # pre_msg: [batch, num_edges, 2*msg_out]
+            pre_msg = torch.cat([receivers, senders], dim=-1)
 
-        # pre_msg: [batch, num_edges, 2*msg_out]
-        pre_msg = torch.cat([receivers, senders], dim=-1)
+            all_msgs = torch.zeros(
+                pre_msg.size(0), pre_msg.size(1), self.msg_out_shape, device=inputs.device
+            )
 
-        all_msgs = torch.zeros(
-            pre_msg.size(0), pre_msg.size(1), self.msg_out_shape, device=inputs.device
-        )
+            if self.skip_first_edge_type:
+                start_idx = 1
+                norm = float(len(self.msg_fc2_list[k])) - 1
+            else:
+                start_idx = 0
+                norm = float(len(self.msg_fc2_list[k]))
 
-        if self.skip_first_edge_type:
-            start_idx = 1
-            norm = float(len(self.msg_fc2)) - 1
-        else:
-            start_idx = 0
-            norm = float(len(self.msg_fc2))
+            # Run separate MLP for every edge type
+            # NOTE: to exclude one edge type, simply offset range by 1
+            for i in range(start_idx, len(self.msg_fc2_list[k])):
+                msg = torch.tanh(self.msg_fc1_list[k][i](pre_msg))
+                if self.training:
+                    msg = F.dropout(msg, p=self.dropout_rate)
+                msg = torch.tanh(self.msg_fc2_list[k][i](msg))
+                msg = msg * edges[:, :, i : i + 1]
+                all_msgs += msg / norm
 
-        # Run separate MLP for every edge type
-        # NOTE: to exclude one edge type, simply offset range by 1
-        for i in range(start_idx, len(self.msg_fc2)):
-            msg = torch.tanh(self.msg_fc1[i](pre_msg))
-            if self.training:
-                msg = F.dropout(msg, p=self.dropout_rate)
-            msg = torch.tanh(self.msg_fc2[i](msg))
-            msg = msg * edges[:, :, i : i + 1]
-            all_msgs += msg / norm
+            # dense message passing
+            agg_msgs = (
+                torch.matmul(self.edge2node_mat, all_msgs)
+            )
+            
+            # # sparse message passing
+            # agg_msgs = (
+            #     torch.sparse.mm(self.edge2node_mat, all_msgs.view(len(self.recv_edges), -1)).view(old_shape)
+            # )
+            hidden_ = agg_msgs.contiguous() / (self.target_dim - 1)  # Average
+            
+            # for skip connection
+            agg_msgs_list.append(hidden_)
 
-        # This step sums all of the messages per node
-        agg_msgs = (
-            all_msgs.transpose(-2, -1).matmul(self.edge2node_mat).transpose(-2, -1)
-        )
-        agg_msgs = agg_msgs.contiguous() / (self.target_dim - 1)  # Average
+        agg_msgs = torch.cat(agg_msgs_list, dim=-1)
+
 
         # GRU-style gated aggregation
         inp_r = self.input_r(inputs).view(inputs.size(0), self.target_dim, -1)
@@ -301,14 +320,14 @@ class DNRIModel(nn.Module):
         distr_output,
         gumbel_temp,
         rnn_hidden_size,
+        edges: list,    # for sparse message passing
+        num_layers: int = 1,
         embedding_dimension: Optional[List[int]] = None,
         lags_seq: Optional[List[int]] = None,
         cell_type="GRU",
         num_edge_types=2,
         scaling: bool = True,
         num_parallel_samples: int = 100,
-        # for sparse message passing
-        num_edges: int = 10,
     ):
         super().__init__()
 
@@ -332,10 +351,10 @@ class DNRIModel(nn.Module):
 
         input_size = self._number_of_features + len(self.lags_seq)
 
-        # for sparse message passing
-        send_edges = np.random.permutation(target_dim)[:num_edges]
-        recv_edges = np.random.permutation(target_dim)[:num_edges]
-        edges = [send_edges, recv_edges]
+        # # for sparse message passing
+        # send_edges = np.random.permutation(target_dim)[:num_edges]
+        # recv_edges = np.random.permutation(target_dim)[:num_edges]
+        # edges = [send_edges, recv_edges]
 
         # input to the encoder has to be [B, T, D, F]
         # but gluonts transformations return [B, T, D*F] -> so need to reshape to [B, T, D, F]
@@ -346,6 +365,7 @@ class DNRIModel(nn.Module):
             rnn_hidden_size=rnn_hidden_size,
             cell_type=cell_type,
             edges=edges,
+            num_layers=num_layers,
         )
 
         self.decoder = DNRI_Decoder(
@@ -358,6 +378,7 @@ class DNRIModel(nn.Module):
             num_edge_types=num_edge_types,
             gumbel_temp=gumbel_temp,
             edges=edges,
+            num_layers=num_layers,
         )
 
         self.embedder = FeatureEmbedder(
@@ -443,53 +464,6 @@ class DNRIModel(nn.Module):
             encoder_input,
         )
 
-        # past_observed_values = torch.min(
-        #     past_observed_values, 1 - past_is_pad.unsqueeze(-1)
-        # )
-
-        # if future_time_feat is None or future_target is None:
-        #     time_feat = past_time_feat[:, -self.context_length :, ...]
-        #     sequence = past_target
-        #     sequence_length = self.history_length
-        #     subsequences_length = self.context_length
-        # else:
-        #     time_feat = torch.cat(
-        #         (
-        #             past_time_feat[:, -self.context_length :, ...],
-        #             future_time_feat,
-        #         ),
-        #         dim=1,
-        #     )
-        #     sequence = torch.cat((past_target, future_target), dim=1)
-        #     sequence_length = self.history_length + self.prediction_length
-        #     subsequences_length = self.context_length + self.prediction_length
-
-        # # (batch_size, sub_seq_len, target_dim, num_lags)
-        # lags = self.get_lagged_subsequences(
-        #     sequence=sequence,
-        #     sequence_length=sequence_length,
-        #     indices=self.lags_seq,
-        #     subsequences_length=subsequences_length,
-        # )
-
-        # # scale is computed on the context length last units of the past target
-        # # scale shape is (batch_size, 1, target_dim)
-        # _, scale = self.scaler(
-        #     past_target[:, -self.context_length :, ...],
-        #     past_observed_values[:, -self.context_length :, ...],
-        # )
-
-        # prior_logits, posterior_logits, prior_state, inputs = self.unroll(
-        #     lags=lags,
-        #     scale=scale,
-        #     time_feat=time_feat,
-        #     feat_static_cat=feat_static_cat,
-        #     feat_static_real=feat_static_real,
-        #     unroll_length=subsequences_length,
-        # )
-
-        # return prior_logits, posterior_logits, prior_state, scale, inputs
-
     def unroll(
         self,
         prior_input: torch.Tensor,
@@ -519,79 +493,6 @@ class DNRIModel(nn.Module):
         )
 
         return prior_logits, posterior_logits, prior_state, encoder_input
-
-    # def unroll(
-    #     self,
-    #     lags: torch.Tensor,
-    #     scale: torch.Tensor,
-    #     time_feat: torch.Tensor,
-    #     feat_static_cat: torch.Tensor,
-    #     feat_static_real: torch.Tensor,
-    #     unroll_length: int,
-    #     prior_state: Optional[Union[List[torch.Tensor], torch.Tensor]] = None,
-    # ) -> Tuple[
-    #     torch.Tensor,
-    #     Union[List[torch.Tensor], torch.Tensor],
-    #     torch.Tensor,
-    #     torch.Tensor,
-    # ]:
-
-    #     # (batch_size, sub_seq_len, target_dim, num_lags)
-    #     lags_scaled = lags / scale.unsqueeze(-1)
-
-    #     # assert_shape(
-    #     #     lags_scaled, (-1, unroll_length, self.target_dim, len(self.lags_seq)),
-    #     # )
-
-    #     # input_lags = lags_scaled.reshape(
-    #     #     (-1, unroll_length, len(self.lags_seq) * self.target_dim)
-    #     # )
-
-    #     # (batch_size, target_dim, embed_dim)
-    #     embedded_cat = self.embedder(feat_static_cat)
-
-    #     # assert_shape(index_embeddings, (-1, self.target_dim, self.embed_dim))
-
-    #     # (batch_size, target_dim, feat_dim)
-    #     static_feat = torch.cat(
-    #         (
-    #             embedded_cat,
-    #             # feat_static_real,
-    #             scale.log()
-    #             if len(self.target_shape) == 0
-    #             else scale.squeeze(1).log().unsqueeze(-1),
-    #         ),
-    #         dim=-1,
-    #     )
-
-    #     # (batch_size, seq_len, target_dim, feat_dim)
-    #     repeated_static_feat = static_feat.unsqueeze(1).expand(
-    #         -1, unroll_length, -1, -1
-    #     )
-
-    #     # (batch_size, seq_len, target_dim, time_feat_dim)
-    #     repeated_time_feat = time_feat.unsqueeze(2).expand(-1, -1, self.target_dim, -1)
-
-    #     # (batch_size, sub_seq_len, target_dim, input_dim)
-    #     inputs = torch.cat(
-    #         (lags_scaled, repeated_static_feat, repeated_time_feat), dim=-1
-    #     )
-
-    #     prior_logits, posterior_logits, prior_state = self.encoder(
-    #         inputs, prior_state=prior_state
-    #     )
-    #     # unroll encoder
-    #     # outputs, state = self.rnn(inputs, begin_state)
-
-    #     # assert_shape(outputs, (-1, unroll_length, self.num_cells))
-    #     # for s in state:
-    #     #     assert_shape(s, (-1, self.num_cells))
-
-    #     # assert_shape(
-    #     #     lags_scaled, (-1, unroll_length, self.target_dim, len(self.lags_seq)),
-    #     # )
-
-    #     return prior_logits, posterior_logits, prior_state, inputs
 
     def get_lagged_subsequences(
         self,
@@ -638,77 +539,6 @@ class DNRIModel(nn.Module):
             sliced_params = [p[:, -trailing_n:] for p in params]
         return self.distr_output.distribution(sliced_params, scale=scale)
 
-    # class DNRI_TrainingNetwork(DNRI):
-    #     def forward(
-    #         self,
-    #         target_dimension_indicator: torch.Tensor,
-    #         feat_static_cat: torch.Tensor,
-    #         feat_static_real: torch.Tensor,
-    #         past_time_feat: torch.Tensor,
-    #         past_target: torch.Tensor,
-    #         past_observed_values: torch.Tensor,
-    #         past_is_pad: torch.Tensor,
-    #         future_time_feat: torch.Tensor,
-    #         future_target: torch.Tensor,
-    #         future_observed_values: torch.Tensor,
-    #     ):
-
-    #         #  encoder
-    #         prior_logits, posterior_logits, _, scale, inputs = self.unroll_encoder(
-    #             feat_static_real=feat_static_real,
-    #             past_time_feat=past_time_feat,
-    #             past_target=past_target,
-    #             past_observed_values=past_observed_values,
-    #             past_is_pad=past_is_pad,
-    #             future_time_feat=future_time_feat,
-    #             future_target=future_target,
-    #             feat_static_cat=target_dimension_indicator,
-    #         )
-
-    #         # decoder
-    #         all_distr_args = []
-    #         num_time_steps = inputs.size(1)
-    #         decoder_hidden = self.decoder.get_initial_hidden(inputs)
-    #         for step in range(num_time_steps):
-    #             current_inputs = inputs[:, step]
-    #             current_p_logits = posterior_logits[:, step]
-
-    #             distr_args, decoder_hidden, _ = self.decoder(
-    #                 inputs=current_inputs,
-    #                 hidden=decoder_hidden,
-    #                 edge_logits=current_p_logits,
-    #             )
-    #             all_distr_args.append(distr_args)
-
-    #         # loss
-    #         # (batch_size, seq_len, target_dim)
-    #         target = torch.cat(
-    #             (past_target[:, -self.context_length :, ...], future_target),
-    #             dim=1,
-    #         )
-
-    #         map_stack = partial(torch.stack, dim=1)
-    #         all_distr_args = tuple(map(map_stack, zip(*all_distr_args)))
-
-    #         # TODO fix
-    #         # distr = self.distr_output.distribution(all_distr_args, scale=scale)
-    #         # loss_nll = -distr.log_prob(target).unsqueeze(-1)
-
-    #         # prob = F.softmax(posterior_logits, dim=-1)
-    #         # loss_kl = self.kl_categorical_learned(prob, prior_logits)
-    #         # loss = loss_nll + self.kl_coef * loss_kl
-    #         # return loss.mean()
-
-    # class DNRI_PredictionNetwork(DNRI):
-    #     def __init__(self, num_parallel_samples: int, **kwargs) -> None:
-    #         super().__init__(**kwargs)
-    #         self.num_parallel_samples = num_parallel_samples
-
-    #         # for decoding the lags are shifted by one,
-    #         # at the first time-step of the decoder a lag of one corresponds to
-    #         # the last target value
-    #         self.shifted_lags = [l - 1 for l in self.lags_seq]
-
     def forward(
         self,
         feat_static_cat: torch.Tensor,
@@ -722,7 +552,7 @@ class DNRIModel(nn.Module):
         if num_parallel_samples is None:
             num_parallel_samples = self.num_parallel_samples
 
-        #  encoder
+        # encoder
         prior_logits, _, prior_state, scale, static_feat, inputs = self.unroll_encoder(
             feat_static_cat=feat_static_cat,
             feat_static_real=feat_static_real,
@@ -800,37 +630,6 @@ class DNRIModel(nn.Module):
             distr = self.output_distribution(params, scale=repeated_scale)
             next_sample = distr.sample()
             future_samples.append(next_sample)
-
-            # # older
-            # lags = self.get_lagged_subsequences(
-            #     sequence=repeated_past_target,
-            #     sequence_length=self.history_length + k,
-            #     indices=self.shifted_lags,
-            #     subsequences_length=1,
-            # )
-
-            # current_edge_logits, _, repeated_prior_states, current_inputs = self.unroll(
-            #     prior_state=repeated_prior_states,
-            #     lags=lags,
-            #     scale=repeated_scale,
-            #     time_feat=repeated_time_feat[:, k : k + 1, ...],
-            #     feat_static_cat=repeated_feat_static_cat,
-            #     feat_static_real=repeated_feat_static_real,
-            #     unroll_length=1,
-            # )
-
-            # distr_args, repeated_decoder_hidden, _ = self.decoder(
-            #     current_inputs.squeeze(1),
-            #     hidden=repeated_decoder_hidden,
-            #     edge_logits=current_edge_logits.squeeze(1),
-            # )
-
-            # distr_args = tuple([distr_arg.unsqueeze(1) for distr_arg in distr_args])
-            # distr = self.distr_output.distribution(distr_args, scale=repeated_scale)
-            # new_samples = distr.sample()
-
-            # future_samples.append(new_samples)
-            # repeated_past_target = torch.cat((repeated_past_target, new_samples), dim=1)
 
         # (batch_size * num_samples, prediction_length, target_dim)
         future_samples_concat = torch.cat(future_samples, dim=1)

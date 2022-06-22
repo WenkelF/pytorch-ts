@@ -55,6 +55,8 @@ class DNRIEstimator(PyTorchLightningEstimator):
         freq: str,
         prediction_length: int,
         target_dim: int,  # Multivariate dimension of the input features
+        edges: list,
+        num_layers: int = 1,
         mlp_hidden_size: int = 64,
         decoder_hidden: int = 64,
         context_length: Optional[int] = None,
@@ -80,7 +82,6 @@ class DNRIEstimator(PyTorchLightningEstimator):
         trainer_kwargs: Optional[Dict[str, Any]] = None,
         train_sampler: Optional[InstanceSampler] = None,
         validation_sampler: Optional[InstanceSampler] = None,
-        num_edges: int = 10,
     ) -> None:
         default_trainer_kwargs = {
             "max_epochs": 100,
@@ -121,7 +122,8 @@ class DNRIEstimator(PyTorchLightningEstimator):
         self.dropout_rate = dropout_rate
 
         # for sparse message passing
-        self.num_edges=num_edges
+        self.edges = edges
+        self.num_layers = num_layers
 
         self.embedding_dimension = (
             embedding_dimension
@@ -299,6 +301,8 @@ class DNRIEstimator(PyTorchLightningEstimator):
             embedding_dimension=self.embedding_dimension,
             target_dim=self.target_dim,
             rnn_hidden_size=self.rnn_hidden_size,
+            edges=self.edges,
+            num_layers=self.num_layers,
             cell_type=self.cell_type,
             context_length=self.context_length,
             prediction_length=self.prediction_length,
@@ -311,7 +315,6 @@ class DNRIEstimator(PyTorchLightningEstimator):
             skip_first_edge_type=self.skip_first_edge_type,
             gumbel_temp=self.gumbel_temp,
             num_parallel_samples=self.num_parallel_samples,
-            num_edges=self.num_edges,
         )
         return DNRILightningModule(
             model=model,
