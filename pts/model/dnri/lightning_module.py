@@ -63,6 +63,7 @@ class DNRILightningModule(pl.LightningModule):
             future_time_feat=future_time_feat,
             future_target=future_target,
         )
+        
         # decoder
         all_distr_args = []
         num_time_steps = encoder_input.size(1)

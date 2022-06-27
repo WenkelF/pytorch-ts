@@ -10,8 +10,8 @@ from pts.modules import StudentTOutput
 
 from utils import construct_full_graph, construct_expander, construct_expander_fast, construct_random_graph, construct_bipartite_graph
 
-# import wandb
-# wandb.init(project="dnri")
+import wandb
+wandb.init(project="dnri")
 
 from parse import parser
 args = parser.parse_args()
@@ -82,12 +82,14 @@ estimator = DNRIEstimator(
     trainer_kwargs=dict(max_epochs=args.num_epochs,  accelerator='gpu', gpus=1),
 )
 
+# training
 predictor = estimator.train(
     training_data=dataset_train,
     num_workers=4,
     shuffle_buffer_length=1024
 )
 
+# testing
 forecast_it, ts_it = make_evaluation_predictions(dataset=dataset_test,
                                                  predictor=predictor,
                                                  num_samples=100)
@@ -110,12 +112,12 @@ print("ND-Sum: {}".format(agg_metric['m_sum_ND']))
 print("NRMSE-Sum: {}".format(agg_metric['m_sum_NRMSE']))
 print("MSE-Sum: {}".format(agg_metric['m_sum_MSE']))
 
-# wandb.log({"CRPS":agg_metric['mean_wQuantileLoss']})
-# wandb.log({"ND":agg_metric['ND']})
-# wandb.log({"NRMSE":agg_metric['NRMSE']})
-# wandb.log({"MSE":agg_metric['MSE']})
+wandb.log({"CRPS":agg_metric['mean_wQuantileLoss']})
+wandb.log({"ND":agg_metric['ND']})
+wandb.log({"NRMSE":agg_metric['NRMSE']})
+wandb.log({"MSE":agg_metric['MSE']})
 
-# wandb.log({"CRPS-Sum":agg_metric['m_sum_mean_wQuantileLoss']})
-# wandb.log({"ND-Sum":agg_metric['m_sum_ND']})
-# wandb.log({"NRMSE-Sum":agg_metric['m_sum_NRMSE']})
-# wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
+wandb.log({"CRPS-Sum":agg_metric['m_sum_mean_wQuantileLoss']})
+wandb.log({"ND-Sum":agg_metric['m_sum_ND']})
+wandb.log({"NRMSE-Sum":agg_metric['m_sum_NRMSE']})
+wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
