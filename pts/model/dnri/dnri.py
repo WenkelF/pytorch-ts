@@ -5,13 +5,20 @@ from gluonts.evaluation import make_evaluation_predictions, MultivariateEvaluato
 from gluonts.dataset.repository.datasets import get_dataset
 from gluonts.dataset.multivariate_grouper import MultivariateGrouper
 
+from gluonts.mx import Trainer
+from gluonts.mx.trainer.callback import TrainingHistory
+
 from pts.model.dnri import DNRIEstimator
 from pts.modules import StudentTOutput
 
 from utils import construct_full_graph, construct_expander, construct_expander_fast, construct_random_graph, construct_bipartite_graph
 
-import wandb
-wandb.init(project="dnri")
+# import wandb
+# wandb.init(project="dnri-link-prediction")
+# wandb.init(project="dnri")
+
+# from pytorch_lightning.loggers import WandbLogger
+# wandb_logger = WandbLogger(project="dnri-link-prediction")
 
 from parse import parser
 args = parser.parse_args()
@@ -58,9 +65,22 @@ if args.graph_constr == "bipartite":
 
 edges = [send_edges, recv_edges]
 
+torch.save(edges, './checkpoints/edges.pt')
+
 
 dataset_train = train_grouper(dataset.train)
 dataset_test = test_grouper(dataset.test)
+
+from custom_callbacks import ReplaceEdgeCallback, EdgeUsageCallback, EpochCallback
+from pytorch_lightning.callbacks import ModelCheckpoint
+
+# callback_list = [EpochCallback(), ModelCheckpoint(dirpath='./checkpoints', filename='{epoch}', save_top_k=-1, every_n_epochs=2)]
+callback_list = []
+
+if args.link_prediction == 1:
+    print("Auxiliary link prediction...")
+    callback_list.append(ReplaceEdgeCallback(args.pre_epochs, args.post_epochs, args.mod_freq, args.num_mods))
+
 estimator = DNRIEstimator(
     freq=dataset.metadata.freq,
     context_length=2*dataset.metadata.prediction_length,
@@ -74,12 +94,14 @@ estimator = DNRIEstimator(
     decoder_hidden=args.hidden_dim_dec,
     rnn_hidden_size=args.hidden_dim_rnn,
     edges=edges,
+    link_prediction = args.link_prediction,
     num_layers=args.num_layers,
     
     # training hyperparams
     batch_size=args.batch_size,
     num_batches_per_epoch=args.num_batches_per_epoch,
-    trainer_kwargs=dict(max_epochs=args.num_epochs,  accelerator='gpu', gpus=1),
+    # trainer_kwargs=dict(max_epochs=args.num_epochs, accelerator='gpu', gpus=1, callbacks=callback_list, logger=wandb_logger),
+    trainer_kwargs=dict(max_epochs=args.num_epochs, accelerator='gpu', gpus=1, callbacks=callback_list),
 )
 
 # training
@@ -112,12 +134,12 @@ print("ND-Sum: {}".format(agg_metric['m_sum_ND']))
 print("NRMSE-Sum: {}".format(agg_metric['m_sum_NRMSE']))
 print("MSE-Sum: {}".format(agg_metric['m_sum_MSE']))
 
-wandb.log({"CRPS":agg_metric['mean_wQuantileLoss']})
-wandb.log({"ND":agg_metric['ND']})
-wandb.log({"NRMSE":agg_metric['NRMSE']})
-wandb.log({"MSE":agg_metric['MSE']})
+# wandb.log({"CRPS":agg_metric['mean_wQuantileLoss']})
+# wandb.log({"ND":agg_metric['ND']})
+# wandb.log({"NRMSE":agg_metric['NRMSE']})
+# wandb.log({"MSE":agg_metric['MSE']})
 
-wandb.log({"CRPS-Sum":agg_metric['m_sum_mean_wQuantileLoss']})
-wandb.log({"ND-Sum":agg_metric['m_sum_ND']})
-wandb.log({"NRMSE-Sum":agg_metric['m_sum_NRMSE']})
-wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
+# wandb.log({"CRPS-Sum":agg_metric['m_sum_mean_wQuantileLoss']})
+# wandb.log({"ND-Sum":agg_metric['m_sum_ND']})
+# wandb.log({"NRMSE-Sum":agg_metric['m_sum_NRMSE']})
+# wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
