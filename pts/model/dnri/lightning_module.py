@@ -35,6 +35,8 @@ class DNRILightningModule(pl.LightningModule):
         self.kl_coef = kl_coef
         self.lr = lr
         self.weight_decay = weight_decay
+        
+        self.edge_usage = None
 
     def _compute_loss(self, batch):
         feat_static_cat = batch["feat_static_cat"]
@@ -45,6 +47,10 @@ class DNRILightningModule(pl.LightningModule):
         future_target = batch["future_target"]
         past_observed_values = batch["past_observed_values"]
         future_observed_values = batch["future_observed_values"]
+        
+        print("Load edges...")
+        self.model.edges = torch.load('./checkpoints/edges.pt')
+        # print(self.model.edges)
 
         # encoder
         (
@@ -70,16 +76,20 @@ class DNRILightningModule(pl.LightningModule):
         decoder_hidden = self.model.decoder.get_initial_hidden(
             encoder_input.size(), device=encoder_input.device
         )
+        edge_usage_list = []
         for step in range(num_time_steps):
             current_inputs = encoder_input[:, step]
             current_p_logits = posterior_logits[:, step]
 
-            distr_args, decoder_hidden, _ = self.model.decoder(
+            distr_args, decoder_hidden, edges = self.model.decoder(
                 inputs=current_inputs,
                 hidden=decoder_hidden,
                 edge_logits=current_p_logits,
             )
             all_distr_args.append(distr_args)
+            edge_usage_list.append(edges[:,:,1].squeeze())
+            
+        self.edge_usage_list = edge_usage_list
 
         map_stack = partial(torch.stack, dim=1)
         all_distr_args = tuple(map(map_stack, zip(*all_distr_args)))

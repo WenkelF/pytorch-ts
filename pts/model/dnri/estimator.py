@@ -52,10 +52,12 @@ class DNRIEstimator(PyTorchLightningEstimator):
     @validated()
     def __init__(
         self,
+        # trainer,
         freq: str,
         prediction_length: int,
         target_dim: int,  # Multivariate dimension of the input features
         edges: list,
+        link_prediction: bool = False,
         num_layers: int = 1,
         mlp_hidden_size: int = 64,
         decoder_hidden: int = 64,
@@ -90,7 +92,7 @@ class DNRIEstimator(PyTorchLightningEstimator):
         if trainer_kwargs is not None:
             default_trainer_kwargs.update(trainer_kwargs)
         super().__init__(trainer_kwargs=default_trainer_kwargs)
-
+        
         self.freq = freq
         self.context_length = (
             context_length if context_length is not None else prediction_length
@@ -123,6 +125,7 @@ class DNRIEstimator(PyTorchLightningEstimator):
 
         # for sparse message passing
         self.edges = edges
+        self.link_prediction = link_prediction
         self.num_layers = num_layers
 
         self.embedding_dimension = (
@@ -266,6 +269,8 @@ class DNRIEstimator(PyTorchLightningEstimator):
                     IterableDataset(training_instances),
                     batch_size=self.batch_size,
                     **kwargs,
+                    # added for avoiding reset of workers
+                    persistent_workers=kwargs["num_workers"] > 0,
                 )
             ),
             self.num_batches_per_epoch,

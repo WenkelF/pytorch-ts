@@ -108,6 +108,13 @@ class DNRI_Encoder(nn.Module):
         return incoming / (self.target_dim - 1)  # average
 
     def forward(self, inputs, prior_state=None):
+        
+        # load modified edges
+        self.send_edges = torch.load('./checkpoints/edges.pt')[0]
+        self.recv_edges = torch.load('./checkpoints/edges.pt')[1]
+        
+        # print("Encoder edges :"+ str([self.send_edges, self.recv_edges]))
+        
         #  input: [B, T, target_dim, features_per_variate]
         x = inputs.transpose(2, 1).contiguous()  # [B, T, D, F] -> [B, D, T, F]
         x = self.mlp_in(x)  # [B, D, T, F]
@@ -209,7 +216,6 @@ class DNRI_Decoder(nn.Module):
             decoder_hidden * self.target_dim
         )
 
-        
         self.send_edges = edges[0]
         self.recv_edges = edges[1]
         
@@ -228,6 +234,13 @@ class DNRI_Decoder(nn.Module):
         )
 
     def forward(self, inputs, hidden, edge_logits, hard_sample: bool = True):
+        
+        # load modified edges
+        self.send_edges = torch.load('./checkpoints/edges.pt')[0]
+        self.recv_edges = torch.load('./checkpoints/edges.pt')[1]
+        
+        # print("Decoder edges :"+ str([self.send_edges, self.recv_edges]))
+        
         old_shape = edge_logits.shape
         edges = F.gumbel_softmax(
             edge_logits.reshape(-1, self.num_edge_types),
@@ -330,6 +343,8 @@ class DNRIModel(nn.Module):
         num_parallel_samples: int = 100,
     ):
         super().__init__()
+        
+        self.edges = edges
 
         self.target_dim = target_dim
         self.distr_output = distr_output
@@ -364,7 +379,7 @@ class DNRIModel(nn.Module):
             mlp_hidden_size=mlp_hidden_size,
             rnn_hidden_size=rnn_hidden_size,
             cell_type=cell_type,
-            edges=edges,
+            edges=self.edges,
             num_layers=num_layers,
         )
 
@@ -377,7 +392,7 @@ class DNRIModel(nn.Module):
             distr_output=distr_output,
             num_edge_types=num_edge_types,
             gumbel_temp=gumbel_temp,
-            edges=edges,
+            edges=self.edges,
             num_layers=num_layers,
         )
 
