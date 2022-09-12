@@ -17,8 +17,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from gluonts.torch.util import weighted_average
+import numpy as np
 
 from .module import DNRIModel
+
+from parse import parser
+args = parser.parse_args()
 
 
 class DNRILightningModule(pl.LightningModule):
@@ -48,9 +52,8 @@ class DNRILightningModule(pl.LightningModule):
         past_observed_values = batch["past_observed_values"]
         future_observed_values = batch["future_observed_values"]
         
-        print("Load edges...")
-        self.model.edges = torch.load('./checkpoints/edges.pt')
-        # print(self.model.edges)
+        self.model.edges = torch.load(str(args.path)+'edges.pt')
+        # self.model.edges = np.load(str(args.path)+'edges.npy')
 
         # encoder
         (

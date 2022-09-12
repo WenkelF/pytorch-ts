@@ -1,19 +1,17 @@
 import torch
 import numpy as np
+import time
 
 from gluonts.evaluation import make_evaluation_predictions, MultivariateEvaluator
 from gluonts.dataset.repository.datasets import get_dataset
 from gluonts.dataset.multivariate_grouper import MultivariateGrouper
-
-from gluonts.mx import Trainer
-from gluonts.mx.trainer.callback import TrainingHistory
 
 from pts.model.dnri import DNRIEstimator
 from pts.modules import StudentTOutput
 
 from utils import construct_full_graph, construct_expander, construct_expander_fast, construct_random_graph, construct_bipartite_graph
 
-# import wandb
+import wandb
 # wandb.init(project="dnri-link-prediction")
 # wandb.init(project="dnri")
 
@@ -26,6 +24,8 @@ args = parser.parse_args()
 torch.manual_seed(0)
 np.random.seed(args.seed)
 
+t0 = time.time()
+
 dataset = get_dataset(args.dataset, regenerate=False)
 
 train_list = list(dataset.train)
@@ -36,45 +36,43 @@ test_grouper = MultivariateGrouper(num_test_dates=int(len(dataset.test)/len(data
                                    max_target_dim=int(dataset.metadata.feat_static_cat[0].cardinality))
 
 target_dim = int(dataset.metadata.feat_static_cat[0].cardinality)
-print("Number of nodes :"+str(target_dim))
+print("Number of nodes: "+str(target_dim))
 
 # fully connected graph O(N^2) space
 if args.graph_constr == "full":
     print("Graph construction: Fully connected graph")
-    send_edges, recv_edges = construct_full_graph(target_dim)
+    edges = construct_full_graph(target_dim)
 
 # expander graph
 if args.graph_constr == "expander":
     print("Graph construction: Expander")
-    send_edges, recv_edges = construct_expander(target_dim, args.graph_density)
+    edges = construct_expander(target_dim, args.graph_density)
 
 # expander graph (fast)
 if args.graph_constr == "expander_fast":
     print("Graph construction: Expander")
-    send_edges, recv_edges = construct_expander_fast(target_dim, args.graph_density)
+    edges = construct_expander_fast(target_dim, args.graph_density)
         
 # sparse random graph
 if args.graph_constr == "random":
     print("Graph construction: Random graph")
-    send_edges, recv_edges = construct_random_graph(target_dim, args.graph_density)
+    edges = construct_random_graph(target_dim, args.graph_density)
    
 # sparse bipartite graph
 if args.graph_constr == "bipartite":
     print("Graph construction: Bipartite graph")
-    send_edges, recv_edges = construct_bipartite_graph(target_dim, args.graph_density)
+    edges = construct_bipartite_graph(target_dim, args.graph_density)
 
-edges = [send_edges, recv_edges]
-
-torch.save(edges, './checkpoints/edges.pt')
-
+torch.save(edges, '/network/scratch/f/frederik.wenkel/dnri/edges.pt')
+# np.save(str(args.path)+'edges.npy', edges)
 
 dataset_train = train_grouper(dataset.train)
 dataset_test = test_grouper(dataset.test)
 
-from custom_callbacks import ReplaceEdgeCallback, EdgeUsageCallback, EpochCallback
+from custom_callbacks import ReplaceEdgeCallback, EdgeUsageCallback
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-# callback_list = [EpochCallback(), ModelCheckpoint(dirpath='./checkpoints', filename='{epoch}', save_top_k=-1, every_n_epochs=2)]
+# callback_list = [ModelCheckpoint(dirpath='./checkpoints', filename='{epoch}', save_top_k=-1, every_n_epochs=2)]
 callback_list = []
 
 if args.link_prediction == 1:
@@ -107,7 +105,7 @@ estimator = DNRIEstimator(
 # training
 predictor = estimator.train(
     training_data=dataset_train,
-    num_workers=4,
+    num_workers=1,
     shuffle_buffer_length=1024
 )
 
@@ -143,3 +141,5 @@ print("MSE-Sum: {}".format(agg_metric['m_sum_MSE']))
 # wandb.log({"ND-Sum":agg_metric['m_sum_ND']})
 # wandb.log({"NRMSE-Sum":agg_metric['m_sum_NRMSE']})
 # wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
+
+print(time.time()-t0)

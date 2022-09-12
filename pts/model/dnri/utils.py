@@ -6,7 +6,7 @@ def construct_full_graph(target_dim):
     send_edges = np.where(adj)[0]
     recv_edges = np.where(adj)[1]
     
-    return send_edges, recv_edges
+    return [send_edges, recv_edges]
 
 
 def construct_expander(target_dim, density):
@@ -43,12 +43,12 @@ def construct_expander(target_dim, density):
         recv_edges_list.append(nodes_temp)
         num_tries_list.append(num_tries)
 
-    print(num_tries_list)
+    print("Number of tries per iter: "+str(num_tries_list))
     
     recv_edges = np.concatenate(recv_edges_list)
     
     # make edges bi-directional
-    return np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)
+    return [np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)]
 
 
 def construct_expander_fast(target_dim, density):

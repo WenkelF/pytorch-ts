@@ -4,6 +4,7 @@ parser = argparse.ArgumentParser()
 
 # data
 parser.add_argument('--dataset', type=str, default="solar_nips", help='Dataset.')
+parser.add_argument('--path', type=str, default="/network/scratch/f/frederik.wenkel/dnri/", help='Path to storage dir')
 
 # model
 parser.add_argument('--seed', type=int, default=0, help='numpy.random seed.')
@@ -13,7 +14,6 @@ parser.add_argument('--graph_constr', type=str, default="expander", help='Graph 
 parser.add_argument('--num_layers', type=int, default=1, help='Number message passing layers.')
 
 # training
-
 parser.add_argument('--num_epochs', type=int, default=5, help='Number of epochs.')
 parser.add_argument('--batch_size', type=int, default=64, help='Batch size.')
 parser.add_argument('--num_batches_per_epoch', type=int, default=100, help='Number of batches per epochs.')

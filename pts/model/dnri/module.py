@@ -11,6 +11,9 @@ from gluonts.torch.modules.feature import FeatureEmbedder
 from pts.feature.lag import get_fourier_lags_for_frequency
 from pts.modules import MLP
 
+from parse import parser
+args = parser.parse_args()
+
 
 def encode_onehot(labels):
     classes = set(labels)
@@ -98,6 +101,22 @@ class DNRI_Encoder(nn.Module):
         incoming = torch.matmul(self.edge2node_mat, tmp_embeddings).view(
             old_shape[0], -1, old_shape[2], old_shape[3]
         )
+    
+    def edge2node_mod(self, edge_embeddings):
+        old_shape = edge_embeddings.shape
+        # dense message passing
+        tmp_embeddings = edge_embeddings.view(old_shape[0], old_shape[1], -1)
+        edge2node_mat = torch.Tensor(encode_onehot_mod(self.recv_edges, self.target_dim)).cuda()
+        
+        # edit: for degree normalization
+        degree_vect = edge2node_mat.sum(1)
+        degree_vect += (degree_vect==0)
+        
+        edge2node_mat /= degree_vect.view(-1,1)
+        
+        incoming = torch.matmul(edge2node_mat, tmp_embeddings).view(
+            old_shape[0], -1, old_shape[2], old_shape[3]
+        )
         
         # # sparse message passing
         # # TODO: make optional
@@ -105,15 +124,17 @@ class DNRI_Encoder(nn.Module):
         # incoming = torch.sparse.mm(self.edge2node_mat, tmp_embeddings).view(
         #     old_shape[0], -1, old_shape[2], old_shape[3]
         # )
-        return incoming / (self.target_dim - 1)  # average
+        
+        return incoming # normalization now in torch.matmul (above)
+
 
     def forward(self, inputs, prior_state=None):
         
         # load modified edges
-        self.send_edges = torch.load('./checkpoints/edges.pt')[0]
-        self.recv_edges = torch.load('./checkpoints/edges.pt')[1]
-        
-        # print("Encoder edges :"+ str([self.send_edges, self.recv_edges]))
+        edges = torch.load(str(args.path)+'edges.pt')
+        # edges = np.load(str(args.path)+'edges.npy')
+        self.send_edges = edges[0]
+        self.recv_edges = edges[1]
         
         #  input: [B, T, target_dim, features_per_variate]
         x = inputs.transpose(2, 1).contiguous()  # [B, T, D, F] -> [B, D, T, F]
@@ -125,7 +146,7 @@ class DNRI_Encoder(nn.Module):
             x = self.mlp_edge_list[k](x)  # [B, D^2, T, F]
             x_skip_list.append(x)
             
-            x = self.edge2node(x)  # [B, D^2, T, F] -> [B, D, T, F]
+            x = self.edge2node_mod(x)  # [B, D^2, T, F] -> [B, D, T, F]
             x = self.mlp_node_list[k](x)  # [B, D, T, F]
         
         x = self.node2edge(x)  # [B, D^2, T, F*2]
@@ -236,10 +257,10 @@ class DNRI_Decoder(nn.Module):
     def forward(self, inputs, hidden, edge_logits, hard_sample: bool = True):
         
         # load modified edges
-        self.send_edges = torch.load('./checkpoints/edges.pt')[0]
-        self.recv_edges = torch.load('./checkpoints/edges.pt')[1]
-        
-        # print("Decoder edges :"+ str([self.send_edges, self.recv_edges]))
+        edges = torch.load(str(args.path)+'edges.pt')
+        # edges = np.load(str(args.path)+'edges.npy')
+        self.send_edges = edges[0]
+        self.recv_edges = edges[1]
         
         old_shape = edge_logits.shape
         edges = F.gumbel_softmax(
@@ -284,15 +305,24 @@ class DNRI_Decoder(nn.Module):
                 all_msgs += msg / norm
 
             # dense message passing
+            edge2node_mat = torch.Tensor(encode_onehot_mod(self.recv_edges, self.target_dim)).cuda()
+            
+            # degree normalization
+            degree_vect = edge2node_mat.sum(1)
+            degree_vect += (degree_vect==0)
+            
+            edge2node_mat /= degree_vect.view(-1,1)
+        
             agg_msgs = (
-                torch.matmul(self.edge2node_mat, all_msgs)
+                torch.matmul(edge2node_mat, all_msgs)
             )
             
             # # sparse message passing
             # agg_msgs = (
             #     torch.sparse.mm(self.edge2node_mat, all_msgs.view(len(self.recv_edges), -1)).view(old_shape)
             # )
-            hidden_ = agg_msgs.contiguous() / (self.target_dim - 1)  # Average
+            
+            hidden_ = agg_msgs.contiguous()  # normalization now in torch.matmul (above)
             
             # for skip connection
             agg_msgs_list.append(hidden_)
@@ -365,11 +395,6 @@ class DNRIModel(nn.Module):
         self.prediction_length = prediction_length
 
         input_size = self._number_of_features + len(self.lags_seq)
-
-        # # for sparse message passing
-        # send_edges = np.random.permutation(target_dim)[:num_edges]
-        # recv_edges = np.random.permutation(target_dim)[:num_edges]
-        # edges = [send_edges, recv_edges]
 
         # input to the encoder has to be [B, T, D, F]
         # but gluonts transformations return [B, T, D*F] -> so need to reshape to [B, T, D, F]
