@@ -84,7 +84,7 @@ def construct_expander_fast(target_dim, density):
     print("Desired density: "+str(density))
     print("Actual density: "+str(np.round(len(edges)/2/num_edges_full, 3)))
     
-    return edges[0,:].squeeze(), edges[1,:].squeeze()
+    return [edges[0,:].squeeze(), edges[1,:].squeeze()]
 
 
 def construct_random_graph(target_dim, density):
@@ -106,7 +106,7 @@ def construct_random_graph(target_dim, density):
     print("Actual density: "+str(np.round(len(send_edges)/num_edges_full, 3)))
     
     # make edges bi-directional
-    return np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)
+    return [np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)]
 
 
 def construct_bipartite_graph(target_dim, density):
@@ -137,4 +137,50 @@ def construct_bipartite_graph(target_dim, density):
     print("Desired density: "+str(density))
     print("Actual density: "+str(np.round(len(send_edges)/2/num_edges_full, 3)))
     
-    return np.array(send_edges), np.array(recv_edges)
+    return [np.array(send_edges), np.array(recv_edges)]
+
+
+# def construct_random_directed_graph(target_dim, density):
+#     num_edges_full = (target_dim ** 2 - target_dim)
+#     num_edges_target = int(np.floor(density * num_edges_full))
+    
+#     all_edges = np.where(np.ones(target_dim) - np.eye(target_dim))
+    
+#     all_send_edges = all_edges[0]
+#     all_recv_edges = all_edges[1]
+    
+#     reorder = np.random.permutation(len(all_send_edges))
+    
+#     send_edges = all_send_edges[reorder][:num_edges_target]
+#     recv_edges = all_recv_edges[reorder][:num_edges_target]
+
+#     num_edges = int(len(send_edges))
+    
+#     print("Number of directed edges: "+str(num_edges))
+#     print("Desired density: "+str(density))
+#     print("Actual density: "+str(np.round(len(send_edges)/num_edges_full, 3)))
+    
+#     return [send_edges, recv_edges], num_edges
+
+
+def construct_random_directed_graph(target_dim, density, num_mods):
+    num_edges_full = (target_dim ** 2 - target_dim)
+    num_edges_target = int(np.floor(density * num_edges_full)) + num_mods
+    
+    all_edges = np.where(np.ones(target_dim) - np.eye(target_dim))
+    
+    all_send_edges = all_edges[0]
+    all_recv_edges = all_edges[1]
+    
+    reorder = np.random.permutation(len(all_send_edges))
+    
+    send_edges = all_send_edges[reorder][:num_edges_target]
+    recv_edges = all_recv_edges[reorder][:num_edges_target]
+
+    num_edges_used = int(len(send_edges)) - num_mods
+    
+    print("Number of directed edges: "+str(num_edges_used))
+    print("Desired density: "+str(density))
+    print("Actual density: "+str(np.round(len(send_edges)/num_edges_full, 3)))
+    
+    return [send_edges, recv_edges], num_edges_used

@@ -9,7 +9,7 @@ from gluonts.dataset.multivariate_grouper import MultivariateGrouper
 from pts.model.dnri import DNRIEstimator
 from pts.modules import StudentTOutput
 
-from utils import construct_full_graph, construct_expander, construct_expander_fast, construct_random_graph, construct_bipartite_graph
+from utils import construct_full_graph, construct_expander, construct_expander_fast, construct_random_graph, construct_bipartite_graph, construct_random_directed_graph
 
 import wandb
 # wandb.init(project="dnri-link-prediction")
@@ -63,21 +63,23 @@ if args.graph_constr == "bipartite":
     print("Graph construction: Bipartite graph")
     edges = construct_bipartite_graph(target_dim, args.graph_density)
 
+# sparse random directed graph
+if args.graph_constr == "random-directed":
+    print("Graph construction: Random directed graph")
+    edges, num_edges_used = construct_random_directed_graph(target_dim, args.graph_density, args.num_mods)
+
 torch.save(edges, '/network/scratch/f/frederik.wenkel/dnri/edges.pt')
-# np.save(str(args.path)+'edges.npy', edges)
 
 dataset_train = train_grouper(dataset.train)
 dataset_test = test_grouper(dataset.test)
 
-from custom_callbacks import ReplaceEdgeCallback, EdgeUsageCallback
-from pytorch_lightning.callbacks import ModelCheckpoint
+from custom_callbacks import ReplaceEdgeCallback, ReplaceEdgeCallback_upd, EdgeUsageCallback
 
-# callback_list = [ModelCheckpoint(dirpath='./checkpoints', filename='{epoch}', save_top_k=-1, every_n_epochs=2)]
 callback_list = []
 
 if args.link_prediction == 1:
     print("Auxiliary link prediction...")
-    callback_list.append(ReplaceEdgeCallback(args.pre_epochs, args.post_epochs, args.mod_freq, args.num_mods))
+    callback_list.append(ReplaceEdgeCallback_upd(num_edges_used, args.pre_epochs, args.post_epochs, args.mod_freq, args.num_mods))
 
 estimator = DNRIEstimator(
     freq=dataset.metadata.freq,
@@ -92,13 +94,12 @@ estimator = DNRIEstimator(
     decoder_hidden=args.hidden_dim_dec,
     rnn_hidden_size=args.hidden_dim_rnn,
     edges=edges,
-    link_prediction = args.link_prediction,
+    num_edges_used=num_edges_used,
     num_layers=args.num_layers,
     
     # training hyperparams
     batch_size=args.batch_size,
     num_batches_per_epoch=args.num_batches_per_epoch,
-    # trainer_kwargs=dict(max_epochs=args.num_epochs, accelerator='gpu', gpus=1, callbacks=callback_list, logger=wandb_logger),
     trainer_kwargs=dict(max_epochs=args.num_epochs, accelerator='gpu', gpus=1, callbacks=callback_list),
 )
 

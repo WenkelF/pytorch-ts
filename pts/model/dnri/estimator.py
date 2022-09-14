@@ -52,12 +52,11 @@ class DNRIEstimator(PyTorchLightningEstimator):
     @validated()
     def __init__(
         self,
-        # trainer,
         freq: str,
         prediction_length: int,
         target_dim: int,  # Multivariate dimension of the input features
         edges: list,
-        link_prediction: bool = False,
+        num_edges_used: int,
         num_layers: int = 1,
         mlp_hidden_size: int = 64,
         decoder_hidden: int = 64,
@@ -125,7 +124,7 @@ class DNRIEstimator(PyTorchLightningEstimator):
 
         # for sparse message passing
         self.edges = edges
-        self.link_prediction = link_prediction
+        self.num_edges_used = num_edges_used
         self.num_layers = num_layers
 
         self.embedding_dimension = (
@@ -307,6 +306,7 @@ class DNRIEstimator(PyTorchLightningEstimator):
             target_dim=self.target_dim,
             rnn_hidden_size=self.rnn_hidden_size,
             edges=self.edges,
+            num_edges_used=self.num_edges_used,
             num_layers=self.num_layers,
             cell_type=self.cell_type,
             context_length=self.context_length,
@@ -338,7 +338,6 @@ class DNRIEstimator(PyTorchLightningEstimator):
             input_names=PREDICTION_INPUT_NAMES,
             prediction_net=module.model,
             batch_size=self.batch_size,
-            freq=self.freq,
             prediction_length=self.prediction_length,
             device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         )

@@ -71,7 +71,9 @@ class DNRI_Encoder(nn.Module):
             self.mlp_edge_list.append(MLP(mlp_hidden_size * 2, [mlp_hidden_size, mlp_hidden_size]))
             self.mlp_node_list.append(MLP(mlp_hidden_size, [mlp_hidden_size, mlp_hidden_size]))
         
-        self.mlp_out = MLP(mlp_hidden_size * 3, [mlp_hidden_size, mlp_hidden_size])
+        # self.mlp_out = MLP(mlp_hidden_size * 3, [mlp_hidden_size, mlp_hidden_size])
+        # edit for skip connection
+        self.mlp_out = MLP(mlp_hidden_size * (num_layers+2), [mlp_hidden_size, mlp_hidden_size])
 
         if rnn_hidden_size is None:
             rnn_hidden_size = mlp_hidden_size
@@ -150,7 +152,12 @@ class DNRI_Encoder(nn.Module):
             x = self.mlp_node_list[k](x)  # [B, D, T, F]
         
         x = self.node2edge(x)  # [B, D^2, T, F*2]
-        x = torch.cat((x, x_skip_list[0]), dim=-1)  # [B, D^2, T, F*3]
+
+        # x = torch.cat((x, x_skip_list[0]), dim=-1)  # [B, D^2, T, F*3]
+        # edit for skip connection
+        x_skip_list.append(x)
+        x = torch.cat(x_skip_list, dim=-1)  # [B, D^2, T, F*(num_layers+2))]
+
         
         x = self.mlp_out(x)  # [B, D^2, T, F]
 
@@ -191,13 +198,14 @@ class DNRI_Decoder(nn.Module):
         dropout_rate,
         distr_output,
         gumbel_temp,
-        edges,
+        num_edges_used,
         num_layers,
         num_edge_types=2,
     ):
         super().__init__()
 
         self.target_dim = target_dim
+        self.num_edges_used = num_edges_used
         self.num_layers = num_layers
         self.num_edge_types = num_edge_types
         self.msg_out_shape = decoder_hidden
@@ -237,13 +245,6 @@ class DNRI_Decoder(nn.Module):
             decoder_hidden * self.target_dim
         )
 
-        self.send_edges = edges[0]
-        self.recv_edges = edges[1]
-        
-        self.register_buffer(
-            "edge2node_mat", torch.Tensor(encode_onehot_mod(self.recv_edges, target_dim))
-        )
-        
         # # for sparse message passing
         # self.register_buffer(
         #     "edge2node_mat", encode_onehot_sparse(self.recv_edges, target_dim)
@@ -258,29 +259,27 @@ class DNRI_Decoder(nn.Module):
         
         # load modified edges
         edges = torch.load(str(args.path)+'edges.pt')
-        # edges = np.load(str(args.path)+'edges.npy')
-        self.send_edges = edges[0]
-        self.recv_edges = edges[1]
+        self.send_edges = edges[0][:self.num_edges_used]
+        self.recv_edges = edges[1][:self.num_edges_used]
         
         old_shape = edge_logits.shape
         edges = F.gumbel_softmax(
             edge_logits.reshape(-1, self.num_edge_types),
             tau=self.gumbel_temp,
             hard=hard_sample,
-        ).view(old_shape)
+        ).view(old_shape) # [B, num_edges, edges_types]
         
         old_shape = hidden.shape
-        hidden_ = hidden
+        hidden_ = hidden # [B, target_dim, msg_out (F)]
         
         # for skip connection
         agg_msgs_list = []
-        
         for k in range(self.num_layers):
             # node2edge
             receivers = hidden_[:, self.recv_edges, ...]
             senders = hidden_[:, self.send_edges, ...]
 
-            # pre_msg: [batch, num_edges, 2*msg_out]
+            # pre_msg: [batch, num_edges_used, 2*msg_out]
             pre_msg = torch.cat([receivers, senders], dim=-1)
 
             all_msgs = torch.zeros(
@@ -297,11 +296,12 @@ class DNRI_Decoder(nn.Module):
             # Run separate MLP for every edge type
             # NOTE: to exclude one edge type, simply offset range by 1
             for i in range(start_idx, len(self.msg_fc2_list[k])):
-                msg = torch.tanh(self.msg_fc1_list[k][i](pre_msg))
+                msg = torch.tanh(self.msg_fc1_list[k][i](pre_msg)) # [B, num_edges_used, F]
                 if self.training:
                     msg = F.dropout(msg, p=self.dropout_rate)
                 msg = torch.tanh(self.msg_fc2_list[k][i](msg))
-                msg = msg * edges[:, :, i : i + 1]
+                msg = msg * edges[:, :self.num_edges_used, i : i + 1]
+                # msg = msg * edges[:, :, i : i + 1]
                 all_msgs += msg / norm
 
             # dense message passing
@@ -364,6 +364,7 @@ class DNRIModel(nn.Module):
         gumbel_temp,
         rnn_hidden_size,
         edges: list,    # for sparse message passing
+        num_edges_used: int, # number us "used" edges
         num_layers: int = 1,
         embedding_dimension: Optional[List[int]] = None,
         lags_seq: Optional[List[int]] = None,
@@ -375,6 +376,7 @@ class DNRIModel(nn.Module):
         super().__init__()
         
         self.edges = edges
+        self.num_edges_used = num_edges_used
 
         self.target_dim = target_dim
         self.distr_output = distr_output
@@ -417,7 +419,7 @@ class DNRIModel(nn.Module):
             distr_output=distr_output,
             num_edge_types=num_edge_types,
             gumbel_temp=gumbel_temp,
-            edges=self.edges,
+            num_edges_used=self.num_edges_used,
             num_layers=num_layers,
         )
 

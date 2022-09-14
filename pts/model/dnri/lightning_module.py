@@ -40,7 +40,7 @@ class DNRILightningModule(pl.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         
-        self.edge_usage = None
+        self.edge_usage = []
 
     def _compute_loss(self, batch):
         feat_static_cat = batch["feat_static_cat"]
@@ -53,7 +53,6 @@ class DNRILightningModule(pl.LightningModule):
         future_observed_values = batch["future_observed_values"]
         
         self.model.edges = torch.load(str(args.path)+'edges.pt')
-        # self.model.edges = np.load(str(args.path)+'edges.npy')
 
         # encoder
         (
