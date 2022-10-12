@@ -6,7 +6,10 @@ def construct_full_graph(target_dim):
     send_edges = np.where(adj)[0]
     recv_edges = np.where(adj)[1]
     
-    return [send_edges, recv_edges]
+    # use all edges
+    num_edges_used = len(recv_edges)
+    
+    return [send_edges, recv_edges], num_edges_used
 
 
 def construct_expander(target_dim, density):
@@ -47,8 +50,11 @@ def construct_expander(target_dim, density):
     
     recv_edges = np.concatenate(recv_edges_list)
     
+    # use all edges
+    num_edges_used = 2*len(recv_edges)
+    
     # make edges bi-directional
-    return [np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)]
+    return [np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)], num_edges_used
 
 
 def construct_expander_fast(target_dim, density):
@@ -79,12 +85,15 @@ def construct_expander_fast(target_dim, density):
     # make edges bi-directional
     edges = np.concatenate((edges, edges[:,[1,0]]), axis=0)
 
+    # use all edges
+    num_edges_used = edges.shape[0]
+    
     print("Number of iterations: "+str(num_iter))
     print("Number of edges: "+str(int(len(edges)/2)))
     print("Desired density: "+str(density))
     print("Actual density: "+str(np.round(len(edges)/2/num_edges_full, 3)))
     
-    return [edges[0,:].squeeze(), edges[1,:].squeeze()]
+    return [edges[:,0].squeeze(), edges[:,1].squeeze()], num_edges_used
 
 
 def construct_random_graph(target_dim, density):
@@ -105,8 +114,11 @@ def construct_random_graph(target_dim, density):
     print("Desired density: "+str(density))
     print("Actual density: "+str(np.round(len(send_edges)/num_edges_full, 3)))
     
+    # use all edges
+    num_edges_used = 2*len(send_edges)
+    
     # make edges bi-directional
-    return [np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)]
+    return [np.concatenate((send_edges, recv_edges), axis=0), np.concatenate((recv_edges, send_edges), axis=0)], num_edges_used
 
 
 def construct_bipartite_graph(target_dim, density):
@@ -132,35 +144,15 @@ def construct_bipartite_graph(target_dim, density):
         send_edges += nodes_rest
         recv_edges += node_stacked
     
+    # use all edges
+    num_edges_used = len(send_edges)
+    
     print("Number of edges: "+str(int(len(send_edges)/2)))
     print("Number of super-nodes: "+str(num_nodes))
     print("Desired density: "+str(density))
     print("Actual density: "+str(np.round(len(send_edges)/2/num_edges_full, 3)))
     
-    return [np.array(send_edges), np.array(recv_edges)]
-
-
-# def construct_random_directed_graph(target_dim, density):
-#     num_edges_full = (target_dim ** 2 - target_dim)
-#     num_edges_target = int(np.floor(density * num_edges_full))
-    
-#     all_edges = np.where(np.ones(target_dim) - np.eye(target_dim))
-    
-#     all_send_edges = all_edges[0]
-#     all_recv_edges = all_edges[1]
-    
-#     reorder = np.random.permutation(len(all_send_edges))
-    
-#     send_edges = all_send_edges[reorder][:num_edges_target]
-#     recv_edges = all_recv_edges[reorder][:num_edges_target]
-
-#     num_edges = int(len(send_edges))
-    
-#     print("Number of directed edges: "+str(num_edges))
-#     print("Desired density: "+str(density))
-#     print("Actual density: "+str(np.round(len(send_edges)/num_edges_full, 3)))
-    
-#     return [send_edges, recv_edges], num_edges
+    return [np.array(send_edges), np.array(recv_edges)], num_edges_used
 
 
 def construct_random_directed_graph(target_dim, density, num_mods):

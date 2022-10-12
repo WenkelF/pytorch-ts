@@ -12,63 +12,64 @@ from pts.modules import StudentTOutput
 from utils import construct_full_graph, construct_expander, construct_expander_fast, construct_random_graph, construct_bipartite_graph, construct_random_directed_graph
 
 import wandb
-# wandb.init(project="dnri-link-prediction")
-# wandb.init(project="dnri")
+wandb.init(project="dnri-debug")
 
-# from pytorch_lightning.loggers import WandbLogger
-# wandb_logger = WandbLogger(project="dnri-link-prediction")
+from pytorch_lightning.loggers import WandbLogger
+wandb_logger = WandbLogger(project="dnri-debug")
 
 from parse import parser
 args = parser.parse_args()
 
-torch.manual_seed(0)
+torch.manual_seed(args.seed_torch)
 np.random.seed(args.seed)
 
 t0 = time.time()
 
 dataset = get_dataset(args.dataset, regenerate=False)
 
+target_dim = int(dataset.metadata.feat_static_cat[0].cardinality)
+if args.target_dim > 0:
+    target_dim = args.target_dim
+print("Number of nodes: "+str(target_dim))
+
 train_list = list(dataset.train)
 
-train_grouper = MultivariateGrouper(max_target_dim=int(dataset.metadata.feat_static_cat[0].cardinality))
+train_grouper = MultivariateGrouper(max_target_dim=target_dim)
 
 test_grouper = MultivariateGrouper(num_test_dates=int(len(dataset.test)/len(dataset.train)), 
-                                   max_target_dim=int(dataset.metadata.feat_static_cat[0].cardinality))
-
-target_dim = int(dataset.metadata.feat_static_cat[0].cardinality)
-print("Number of nodes: "+str(target_dim))
+                                   max_target_dim=target_dim)
 
 # fully connected graph O(N^2) space
 if args.graph_constr == "full":
     print("Graph construction: Fully connected graph")
-    edges = construct_full_graph(target_dim)
+    edges, num_edges_used = construct_full_graph(target_dim)
 
 # expander graph
 if args.graph_constr == "expander":
     print("Graph construction: Expander")
-    edges = construct_expander(target_dim, args.graph_density)
+    edges, num_edges_used = construct_expander(target_dim, args.graph_density)
 
 # expander graph (fast)
 if args.graph_constr == "expander_fast":
     print("Graph construction: Expander")
-    edges = construct_expander_fast(target_dim, args.graph_density)
+    edges, num_edges_used = construct_expander_fast(target_dim, args.graph_density)
         
 # sparse random graph
 if args.graph_constr == "random":
     print("Graph construction: Random graph")
-    edges = construct_random_graph(target_dim, args.graph_density)
+    edges, num_edges_used = construct_random_graph(target_dim, args.graph_density)
    
 # sparse bipartite graph
 if args.graph_constr == "bipartite":
     print("Graph construction: Bipartite graph")
-    edges = construct_bipartite_graph(target_dim, args.graph_density)
+    edges, num_edges_used = construct_bipartite_graph(target_dim, args.graph_density)
 
 # sparse random directed graph
 if args.graph_constr == "random-directed":
     print("Graph construction: Random directed graph")
     edges, num_edges_used = construct_random_directed_graph(target_dim, args.graph_density, args.num_mods)
 
-torch.save(edges, '/network/scratch/f/frederik.wenkel/dnri/edges.pt')
+torch.save(edges, str(args.path)+'edges.pt')
 
 dataset_train = train_grouper(dataset.train)
 dataset_test = test_grouper(dataset.test)
@@ -86,8 +87,8 @@ estimator = DNRIEstimator(
     context_length=2*dataset.metadata.prediction_length,
     prediction_length=dataset.metadata.prediction_length,
     
-    target_dim=int(dataset.metadata.feat_static_cat[0].cardinality),
-    distr_output=StudentTOutput(int(dataset.metadata.feat_static_cat[0].cardinality)),
+    target_dim=target_dim,
+    distr_output=StudentTOutput(target_dim),
     
     # DNRI hyper-params
     mlp_hidden_size=args.hidden_dim_mlp,
@@ -100,14 +101,15 @@ estimator = DNRIEstimator(
     # training hyperparams
     batch_size=args.batch_size,
     num_batches_per_epoch=args.num_batches_per_epoch,
-    trainer_kwargs=dict(max_epochs=args.num_epochs, accelerator='gpu', gpus=1, callbacks=callback_list),
+    trainer_kwargs=dict(max_epochs=args.num_epochs, accelerator='gpu', gpus=1, callbacks=callback_list, logger=wandb_logger),
 )
 
 # training
 predictor = estimator.train(
     training_data=dataset_train,
     num_workers=1,
-    shuffle_buffer_length=1024
+    shuffle_buffer_length=1024,
+    cashe_data=True,
 )
 
 # testing
@@ -133,14 +135,9 @@ print("ND-Sum: {}".format(agg_metric['m_sum_ND']))
 print("NRMSE-Sum: {}".format(agg_metric['m_sum_NRMSE']))
 print("MSE-Sum: {}".format(agg_metric['m_sum_MSE']))
 
-# wandb.log({"CRPS":agg_metric['mean_wQuantileLoss']})
-# wandb.log({"ND":agg_metric['ND']})
-# wandb.log({"NRMSE":agg_metric['NRMSE']})
-# wandb.log({"MSE":agg_metric['MSE']})
-
-# wandb.log({"CRPS-Sum":agg_metric['m_sum_mean_wQuantileLoss']})
-# wandb.log({"ND-Sum":agg_metric['m_sum_ND']})
-# wandb.log({"NRMSE-Sum":agg_metric['m_sum_NRMSE']})
-# wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
+wandb.log({"CRPS-Sum":agg_metric['m_sum_mean_wQuantileLoss']})
+wandb.log({"CRPS":agg_metric['mean_wQuantileLoss']})
+wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
+wandb.log({"MSE":agg_metric['MSE']})
 
 print(time.time()-t0)

@@ -438,7 +438,8 @@ class DNRIModel(nn.Module):
         return (
             sum(self.embedding_dimension)
             + self.num_feat_static_real
-            + self.target_dim  # the log(scale)
+            # + self.target_dim  # the log(scale)
+            + 1
             + self.num_feat_dynamic_real
         )
 
@@ -465,18 +466,27 @@ class DNRIModel(nn.Module):
             torch.cat((context, future_target[:, :-1]), dim=1) / scale
             if future_target is not None
             else context / scale
-        )
+        ) # [B,T,N]
+        
+
+        ### edit start: correct scale features
 
         embedded_cat = self.embedder(feat_static_cat)
+        # static_feat = torch.cat(
+        #     (embedded_cat, feat_static_real, scale.log().squeeze(1)),
+        #     dim=1,
+        # ) # [B,Fs]
         static_feat = torch.cat(
-            (embedded_cat, feat_static_real, scale.log().squeeze()),
+            (embedded_cat, feat_static_real),
             dim=1,
-        )
+        ) # [B,Fs]
         expanded_static_feat = (
             static_feat.unsqueeze(1)
             .unsqueeze(1)
             .expand(-1, input.shape[1], self.target_dim, -1)
-        )
+        ) # [B,T,N,Fs]
+
+        expanded_static_feat = torch.cat((expanded_static_feat, scale.log().expand(-1, input.shape[1], -1).unsqueeze(-1)), dim=-1)
 
         time_feat = (
             torch.cat(
@@ -485,13 +495,15 @@ class DNRIModel(nn.Module):
                     future_time_feat,
                 ),
                 dim=1,
-            )
+            ) # [B,T,Ft]
             if future_time_feat is not None
             else past_time_feat[:, -self.context_length + 1 :, ...]
         )
-        expanded_time_feat = time_feat.unsqueeze(2).expand(-1, -1, self.target_dim, -1)
+        expanded_time_feat = time_feat.unsqueeze(2).expand(-1, -1, self.target_dim, -1) # [B,T,N,Ft]
 
         features = torch.cat((expanded_static_feat, expanded_time_feat), dim=-1)
+
+        ### edit end
 
         prior_logits, posterior_logits, prior_state, encoder_input = self.unroll(
             prior_input, input, features
@@ -649,7 +661,9 @@ class DNRIModel(nn.Module):
         for k in range(1, self.prediction_length):
             scaled_next_sample = next_sample / repeated_scale
             next_features = torch.cat(
-                (repeated_static_feat, repeated_time_feat[:, k : k + 1, ...]),
+                # (repeated_static_feat, repeated_time_feat[:, k : k + 1, ...]),
+                # edit add (missing) correct scale feat
+                (repeated_static_feat, repeated_scale.unsqueeze(-1), repeated_time_feat[:, k : k + 1, ...]),
                 dim=-1,
             )
             (prior_logits, _, repeated_prior_states, encoder_input,) = self.unroll(

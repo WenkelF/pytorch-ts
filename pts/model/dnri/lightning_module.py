@@ -10,6 +10,7 @@
 # on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
+from cmath import log
 from functools import partial
 
 import pytorch_lightning as pl
@@ -53,6 +54,8 @@ class DNRILightningModule(pl.LightningModule):
         future_observed_values = batch["future_observed_values"]
         
         self.model.edges = torch.load(str(args.path)+'edges.pt')
+
+        # pl.Trainer.logger.watch(self.model, log="all")
 
         # encoder
         (
@@ -138,6 +141,7 @@ class DNRILightningModule(pl.LightningModule):
             on_step=False,
             prog_bar=True,
         )
+
         return train_loss
 
     def validation_step(self, batch, batch_idx: int):  # type: ignore
