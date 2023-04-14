@@ -1,0 +1,1 @@
+{"train_loss": -17.329378128051758, "epoch": 0, "trainer/global_step": 99, "_timestamp": 1681423955, "_runtime": 68, "_step": 4, "CRPS-Sum": 0.0948571954274783, "CRPS": 0.08581352807174765, "MSE-Sum": 0.47092727025349934, "MSE": 0.011882261021692103, "_wandb": {"runtime": 67}}

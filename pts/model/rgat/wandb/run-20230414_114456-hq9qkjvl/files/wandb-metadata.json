@@ -1,0 +1,27 @@
+{
+    "os": "Linux-4.15.0-200-generic-x86_64-with-debian-buster-sid",
+    "python": "3.7.6",
+    "heartbeatAt": "2023-04-14T15:45:00.118110",
+    "startedAt": "2023-04-14T15:44:56.880248",
+    "docker": null,
+    "gpu": "NVIDIA A100-SXM4-80GB",
+    "gpu_count": 1,
+    "cpu_count": 64,
+    "cuda": null,
+    "args": [
+        "--num_epochs",
+        "1"
+    ],
+    "state": "running",
+    "program": "main.py",
+    "codePath": "pts/model/rgat/main.py",
+    "git": {
+        "remote": "git@github.com:WenkelF/pytorch-ts.git",
+        "commit": "768197091baa08ddd67e393c36f1cdf6b1fcc781"
+    },
+    "email": "frederik.wenkel@gmail.com",
+    "root": "/home/mila/f/frederik.wenkel/projects/pytorch-ts",
+    "host": "cn-g026",
+    "username": "frederik.wenkel",
+    "executable": "/home/mila/f/frederik.wenkel/venv_pts/bin/python"
+}
