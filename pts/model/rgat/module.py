@@ -1,9 +1,7 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from gluonts.torch.modules.scaler import MeanScaler, NOPScaler
 from gluonts.torch.modules.feature import FeatureEmbedder
@@ -20,46 +18,57 @@ class RGAT_Decoder(nn.Module):
         self,
         target_dim,
         input_size,
-        decoder_hidden,
-        dropout_rate,
-        distr_output
+        distr_output,
+        lin_hidden: int = 32,
+        att_hidden: int = 0,
+        num_att_heads: int = 8,
+        activation = nn.Tanh(),
+        activation_att = nn.LeakyReLU(negative_slope=0.2),
+        dropout: float = 0.,
+        dropout_att: float = 0.
     ):
         super().__init__()
 
         self.target_dim = target_dim
-        self.msg_out_shape = decoder_hidden
-        self.dropout_rate = dropout_rate
+        self.msg_out_shape = lin_hidden
 
-        self.dropout_in = nn.Dropout(p=0.0)
-        self.dropout = nn.Dropout(p=0.5)
-        self.activation_att = nn.LeakyReLU()
-        self.activation = nn.Tanh()
+        self.dropout = nn.Dropout(p=dropout)
+        self.dropout_att = nn.Dropout(p=dropout_att)
+        self.activation = activation
+        self.activation_att = activation_att
 
         self.adj = torch.ones(target_dim, target_dim) - torch.eye(target_dim)
 
-        self.linear = nn.Parameter(torch.empty(4, input_size, decoder_hidden))
+        if att_hidden > 0:
+            self.linear_att = nn.Parameter(torch.empty(num_att_heads, input_size, att_hidden))
+            nn.init.xavier_uniform_(self.linear_att.data)
+        else:
+            self.linear_att = None
+            att_hidden = lin_hidden
+
+        self.linear = nn.Parameter(torch.empty(num_att_heads, input_size, lin_hidden))
         nn.init.xavier_uniform_(self.linear.data)
 
-        self.attention_vect_src = nn.Parameter(torch.empty(4, decoder_hidden, 1))
+        self.bias = nn.Parameter(torch.zeros(1, lin_hidden))
+
+        self.attention_vect_src = nn.Parameter(torch.empty(num_att_heads, att_hidden, 1))
         nn.init.xavier_uniform_(self.attention_vect_src.data)
 
-        self.attention_vect_tar = nn.Parameter(torch.empty(4, decoder_hidden, 1))
+        self.attention_vect_tar = nn.Parameter(torch.empty(num_att_heads, att_hidden, 1))
         nn.init.xavier_uniform_(self.attention_vect_tar.data)
 
-        self.bias = nn.Parameter(torch.zeros(1, decoder_hidden))
-
         # for skip connection
-        self.hidden_r = nn.Linear(decoder_hidden, decoder_hidden, bias=False)
-        self.hidden_i = nn.Linear(decoder_hidden, decoder_hidden, bias=False)
-        self.hidden_m = nn.Linear(decoder_hidden, decoder_hidden, bias=False)
+        self.hidden_r = nn.Linear(lin_hidden, lin_hidden, bias=False)
+        self.hidden_i = nn.Linear(lin_hidden, lin_hidden, bias=False)
+        self.hidden_m = nn.Linear(lin_hidden, lin_hidden, bias=False)
 
-        self.input_r = nn.Linear(input_size, decoder_hidden, bias=True)
-        self.input_i = nn.Linear(input_size, decoder_hidden, bias=True)
-        self.input_n = nn.Linear(input_size, decoder_hidden, bias=True)
+        self.input_r = nn.Linear(input_size, lin_hidden, bias=True)
+        self.input_i = nn.Linear(input_size, lin_hidden, bias=True)
+        self.input_n = nn.Linear(input_size, lin_hidden, bias=True)
 
-        self.out_mlp = MLP(decoder_hidden, [decoder_hidden, decoder_hidden])
+        self.out_mlp = MLP(lin_hidden, [lin_hidden, lin_hidden])
         self.proj_dist_args = distr_output.get_args_proj(
-            decoder_hidden * self.target_dim
+            lin_hidden * self.target_dim
         )
 
     def get_initial_hidden(self, inputs_size, device):
@@ -70,14 +79,18 @@ class RGAT_Decoder(nn.Module):
     def forward(self, inputs, hidden):
         
         # Dropout step
-        x = self.dropout_in(inputs)
+        x = self.dropout(inputs)
         old_shape = x.shape
         x = x.contiguous().view(-1, x.size(-1))
 
         # Attention mechanism
         h = torch.matmul(x, self.linear)
-        h_src = torch.matmul(h, self.attention_vect_src)
-        h_tar = torch.matmul(h, self.attention_vect_tar)
+        if self.linear_att is not None:
+            h_att = torch.matmul(x, self.linear_att)
+        else:
+            h_att = h
+        h_src = torch.matmul(h_att, self.attention_vect_src)
+        h_tar = torch.matmul(h_att, self.attention_vect_tar)
 
         h = h.view(h.size(0), old_shape[0], old_shape[1], -1)
         h_src = h_src.view(h_src.size(0), old_shape[0], old_shape[1], -1)
@@ -88,7 +101,7 @@ class RGAT_Decoder(nn.Module):
             score_mat = self.activation_att(score_mat)
         score_mat = torch.where(self.adj.cuda() > 0, score_mat, -9e15)
         att_mat = torch.softmax(score_mat, dim=-1)
-        att_mat = self.dropout(att_mat)
+        att_mat = self.dropout_att(att_mat)
 
         # Message passing step
         msgs = torch.matmul(att_mat, h)
@@ -119,12 +132,16 @@ class RGATModel(nn.Module):
         context_length: int,
         prediction_length: int,
         num_feat_dynamic_real: int,
-        # num_feat_static_real: int,
         num_feat_static_cat: int,
-        decoder_hidden,
-        dropout_rate,
+        embedding_dim: int,
         distr_output,
-        embedding_dimension: int,
+        lin_hidden: int = 32,
+        att_hidden: int = 0,
+        num_att_heads: int = 8,
+        activation = nn.Tanh(),
+        activation_att = nn.LeakyReLU(negative_slope=0.2),
+        dropout: float = 0.,
+        dropout_att: float = 0.,
         lags_seq: Optional[List[int]] = None,
         scaling: bool = True,
         num_parallel_samples: int = 100
@@ -137,28 +154,32 @@ class RGATModel(nn.Module):
 
         self.num_feat_dynamic_real = num_feat_dynamic_real
         self.num_feat_static_cat = num_feat_static_cat
-        # self.num_feat_static_real = num_feat_static_real
 
         self.lags_seq = lags_seq or get_fourier_lags_for_frequency(freq_str=freq)
         self.num_parallel_samples = num_parallel_samples
         self.context_length = context_length
         self.prediction_length = prediction_length
 
-        self.embedding_dimension = embedding_dimension
+        self.embedding_dim = embedding_dim
 
         input_size = self._number_of_features + len(self.lags_seq)
 
         self.decoder = RGAT_Decoder(
             target_dim=target_dim,
             input_size=input_size,
-            decoder_hidden=decoder_hidden,
-            dropout_rate=dropout_rate,
-            distr_output=distr_output
+            distr_output=distr_output,
+            lin_hidden=lin_hidden,
+            att_hidden=att_hidden,
+            num_att_heads=num_att_heads,
+            activation=activation,
+            activation_att=activation_att,
+            dropout=dropout,
+            dropout_att=dropout_att
         )
 
         self.embedder = FeatureEmbedder(
             cardinalities=[target_dim],
-            embedding_dims=[self.embedding_dimension],
+            embedding_dims=[self.embedding_dim],
         )
 
         if scaling:
@@ -169,7 +190,7 @@ class RGATModel(nn.Module):
     @property
     def _number_of_features(self) -> int:
         return (
-            self.embedding_dimension
+            self.embedding_dim
             + 1 # scale
             + self.num_feat_dynamic_real
         )

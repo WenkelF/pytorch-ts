@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import numpy as np
 import time
 
@@ -22,18 +23,15 @@ from parse import parser
 def main(args):
 
     torch.manual_seed(args.seed_torch)
-    np.random.seed(args.seed)
 
     t0 = time.time()
 
-    # if args.dataset == 'dummy':
-    #     dataset = ts_gen(5, 10, 0.4)
-    # else:
     dataset = get_dataset(args.dataset, regenerate=False)
 
     target_dim = int(dataset.metadata.feat_static_cat[0].cardinality)
     if args.target_dim > 0:
         target_dim = args.target_dim
+    
     print("Number of nodes: "+str(target_dim))
 
     train_grouper = MultivariateGrouper(max_target_dim=target_dim)
@@ -46,14 +44,21 @@ def main(args):
 
     estimator = RGATEstimator(
         freq=dataset.metadata.freq,
-        context_length=2*dataset.metadata.prediction_length,
-        prediction_length=dataset.metadata.prediction_length,
         target_dim=target_dim,
+        prediction_length=dataset.metadata.prediction_length,
+        context_length=2*dataset.metadata.prediction_length,
+        embedding_dim=args.embedding_dim,
         distr_output=StudentTOutput(target_dim),
-        decoder_hidden=args.hidden_dim_dec,
-        embedding_dimension=args.embedding_dim,
+        lin_hidden = args.lin_hidden,
+        att_hidden = args.att_hidden,
+        num_att_heads = args.num_att_heads,
+        activation = eval(args.activation),
+        activation_att = eval(args.activation_att),
+        dropout = args.dropout,
+        dropout_att = args.dropout_att,
         lr = args.lr,
         weight_decay = args.weight_decay,
+        scaling = eval(args.scaling),
         batch_size=args.batch_size,
         num_batches_per_epoch=args.num_batches_per_epoch,
         trainer_kwargs=dict(

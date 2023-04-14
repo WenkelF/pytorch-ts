@@ -1,6 +1,8 @@
 from typing import Any, Dict, Iterable, List, Optional
 
 import torch
+import torch.nn as nn
+
 from gluonts.core.component import validated
 from gluonts.dataset.common import Dataset
 from gluonts.dataset.field_names import FieldName
@@ -53,25 +55,29 @@ class RGATEstimator(PyTorchLightningEstimator):
     def __init__(
         self,
         freq: str,
+        target_dim: int,
         prediction_length: int,
-        target_dim: int,                # number of nodes
-        decoder_hidden: int = 64,
         context_length: Optional[int] = None,
-        num_parallel_samples: int = 100,
-        dropout_rate: float = 0.1,
-        lr: float = 1e-3,
-        weight_decay: float = 1e-8,
         num_feat_dynamic_real: int = 0,
         num_feat_static_cat: int = 0,
         num_feat_static_real: int = 0,
-        embedding_dimension: Optional[int] = None,
+        embedding_dim: int = 4,
         distr_output: Optional[DistributionOutput] = None,
-        rank: Optional[int] = 5,
+        lin_hidden: int = 32,
+        att_hidden: int = 0,
+        num_att_heads: int = 8,
+        activation = nn.Tanh(),
+        activation_att = nn.LeakyReLU(negative_slope=0.2),
+        dropout: float = 0.,
+        dropout_att: float = 0.,
+        lr: float = 1e-3,
+        weight_decay: float = 1e-8,
         scaling: bool = True,
         lags_seq: Optional[List[int]] = None,
         time_features: Optional[List[TimeFeature]] = None,
         batch_size: int = 32,
         num_batches_per_epoch: int = 50,
+        num_parallel_samples: int = 100,
         trainer_kwargs: Optional[Dict[str, Any]] = None,
         train_sampler: Optional[InstanceSampler] = None,
         validation_sampler: Optional[InstanceSampler] = None,
@@ -84,49 +90,34 @@ class RGATEstimator(PyTorchLightningEstimator):
             default_trainer_kwargs.update(trainer_kwargs)
         super().__init__(trainer_kwargs=default_trainer_kwargs)
         
+        # Data
         self.freq = freq
+        self.prediction_length = prediction_length
+        self.target_dim = target_dim
         self.context_length = (
             context_length if context_length is not None else prediction_length
         )
-        self.prediction_length = prediction_length
-
-        if distr_output is not None:
-            self.distr_output = distr_output
-        else:
-            self.distr_output = LowRankMultivariateNormalOutput(
-                dim=target_dim, rank=rank
-            )
+        self.cardinality = [target_dim]
+        self.embedding_dim = embedding_dim
 
         self.num_feat_dynamic_real = num_feat_dynamic_real
         self.num_feat_static_cat = num_feat_static_cat
         self.num_feat_static_real = num_feat_static_real
 
-        self.prediction_length = prediction_length
-        self.target_dim = target_dim
-        self.decoder_hidden = decoder_hidden
+        # Model
+        self.distr_output = distr_output
+        self.lin_hidden = lin_hidden
+        self.att_hidden = att_hidden
+        self.num_att_heads = num_att_heads
+        self.activation = activation
+        self.activation_att = activation_att
+        self.dropout = dropout
+        self.dropout_att = dropout_att
+
+        # Training
         self.lr = lr
         self.weight_decay = weight_decay
-
-        self.num_parallel_samples = num_parallel_samples
-        self.dropout_rate = dropout_rate
-
-        self.embedding_dimension = 4
-
-        self.cardinality = [target_dim]
-
-        self.embedding_dimension = embedding_dimension
-
-        self.num_parallel_samples = num_parallel_samples
-        self.batch_size = batch_size
-        self.num_batches_per_epoch = num_batches_per_epoch
-
-        self.train_sampler = train_sampler or ExpectedNumInstanceSampler(
-            num_instances=1.0, min_future=prediction_length
-        )
-        self.validation_sampler = validation_sampler or ValidationSplitSampler(
-            min_future=prediction_length
-        )
-
+        self.scaling = scaling
         self.lags_seq = lags_seq
 
         self.time_features = (
@@ -135,7 +126,16 @@ class RGATEstimator(PyTorchLightningEstimator):
             else fourier_time_features_from_frequency_str(self.freq)
         )
 
-        self.scaling = scaling
+        self.batch_size = batch_size
+        self.num_batches_per_epoch = num_batches_per_epoch
+        self.num_parallel_samples = num_parallel_samples
+
+        self.train_sampler = train_sampler or ExpectedNumInstanceSampler(
+            num_instances=1.0, min_future=prediction_length
+        )
+        self.validation_sampler = validation_sampler or ValidationSplitSampler(
+            min_future=prediction_length
+        )
 
     def create_transformation(self) -> Transformation:
         remove_field_names = []
@@ -279,17 +279,22 @@ class RGATEstimator(PyTorchLightningEstimator):
             context_length = self.context_length,
             prediction_length = self.prediction_length,
             num_feat_dynamic_real = 1 + self.num_feat_dynamic_real + 2 * len(self.time_features),
-            num_feat_static_cat=max(1, self.num_feat_static_cat),
-            decoder_hidden=self.decoder_hidden,
-            dropout_rate=self.dropout_rate,
-            distr_output=self.distr_output,
-            embedding_dimension=self.embedding_dimension,
-            lags_seq=self.lags_seq,
-            scaling=self.scaling,
-            num_parallel_samples=self.num_parallel_samples
+            num_feat_static_cat = max(1, self.num_feat_static_cat),
+            embedding_dim = self.embedding_dim,
+            distr_output = self.distr_output,
+            lin_hidden = self.lin_hidden,
+            att_hidden = self.att_hidden,
+            num_att_heads = self.num_att_heads,
+            activation = self.activation,
+            activation_att = self.activation_att,
+            dropout = self.dropout,
+            dropout_att = self.dropout_att,
+            lags_seq = self.lags_seq,
+            scaling = self.scaling,
+            num_parallel_samples = self.num_parallel_samples
         )
         return RGATLightningModule(
-            model=model,
+            model = model,
             lr = self.lr,
             weight_decay = self.weight_decay
         )
@@ -302,10 +307,10 @@ class RGATEstimator(PyTorchLightningEstimator):
         prediction_splitter = self._create_instance_splitter(module, "test")
 
         return PyTorchPredictor(
-            input_transform=transformation + prediction_splitter,
-            input_names=PREDICTION_INPUT_NAMES,
-            prediction_net=module.model,
-            batch_size=self.batch_size,
-            prediction_length=self.prediction_length,
-            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+            input_transform = transformation + prediction_splitter,
+            input_names = PREDICTION_INPUT_NAMES,
+            prediction_net = module.model,
+            batch_size = self.batch_size,
+            prediction_length = self.prediction_length,
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         )

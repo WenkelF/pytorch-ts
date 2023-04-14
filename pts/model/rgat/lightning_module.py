@@ -118,7 +118,7 @@ class RGATLightningModule(pl.LightningModule):
             "train_loss",
             train_loss,
             on_epoch=True,
-            on_step=False,
+            on_step=True,
             prog_bar=True,
         )
 
