@@ -10,12 +10,10 @@ from gluonts.dataset.multivariate_grouper import MultivariateGrouper
 from pts.model.rgat import RGATEstimator
 from pts.modules import StudentTOutput
 
-# from utils.data_utils import ts_gen
 import wandb
-wandb.init(project="dnri-mod")
+wandb.init(project="pts-rgat")
 
 from pytorch_lightning.loggers import WandbLogger
-wandb_logger = WandbLogger(project="dnri-mod")
 
 from parse import parser
 
@@ -23,6 +21,8 @@ from parse import parser
 def main(args):
 
     torch.manual_seed(args.seed_torch)
+
+    wandb_logger = WandbLogger(project=args.project_name, save_dir='./logging')
 
     t0 = time.time()
 
@@ -92,19 +92,19 @@ def main(args):
     agg_metric, _ = evaluator(tss, forecasts, num_series=len(dataset_test))
 
     print("CRPS: {}".format(agg_metric['mean_wQuantileLoss']))
-    print("ND: {}".format(agg_metric['ND']))
-    print("NRMSE: {}".format(agg_metric['NRMSE']))
-    print("MSE: {}".format(agg_metric['MSE']))
-
     print("CRPS-Sum: {}".format(agg_metric['m_sum_mean_wQuantileLoss']))
-    print("ND-Sum: {}".format(agg_metric['m_sum_ND']))
-    print("NRMSE-Sum: {}".format(agg_metric['m_sum_NRMSE']))
+    print("MSE: {}".format(agg_metric['MSE']))
     print("MSE-Sum: {}".format(agg_metric['m_sum_MSE']))
+
+    print("ND: {}".format(agg_metric['ND']))
+    print("ND-Sum: {}".format(agg_metric['m_sum_ND']))
+    print("NRMSE: {}".format(agg_metric['NRMSE']))
+    print("NRMSE-Sum: {}".format(agg_metric['m_sum_NRMSE']))
 
     wandb.log({"CRPS-Sum":agg_metric['m_sum_mean_wQuantileLoss']})
     wandb.log({"CRPS":agg_metric['mean_wQuantileLoss']})
-    wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
     wandb.log({"MSE":agg_metric['MSE']})
+    wandb.log({"MSE-Sum":agg_metric['m_sum_MSE']})
 
     print(time.time()-t0)
 

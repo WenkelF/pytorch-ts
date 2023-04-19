@@ -29,11 +29,14 @@ from gluonts.transform import (
 )
 from gluonts.transform.sampler import InstanceSampler
 from pts.feature.time_feature import fourier_time_features_from_frequency_str
-from pts.modules import LowRankMultivariateNormalOutput, DistributionOutput
+from pts.modules import DistributionOutput
 from torch.utils.data import DataLoader
 
 from .lightning_module import RGATLightningModule
 from .module import RGATModel
+
+import wandb
+
 
 PREDICTION_INPUT_NAMES = [
     "feat_static_cat",
@@ -120,11 +123,7 @@ class RGATEstimator(PyTorchLightningEstimator):
         self.scaling = scaling
         self.lags_seq = lags_seq
 
-        self.time_features = (
-            time_features
-            if time_features is not None
-            else fourier_time_features_from_frequency_str(self.freq)
-        )
+        self.time_features = fourier_time_features_from_frequency_str(self.freq)
 
         self.batch_size = batch_size
         self.num_batches_per_epoch = num_batches_per_epoch
@@ -293,6 +292,9 @@ class RGATEstimator(PyTorchLightningEstimator):
             scaling = self.scaling,
             num_parallel_samples = self.num_parallel_samples
         )
+
+        wandb.watch(model, log='gradients', log_freq=5)
+
         return RGATLightningModule(
             model = model,
             lr = self.lr,

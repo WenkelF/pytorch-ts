@@ -79,46 +79,46 @@ class RGAT_Decoder(nn.Module):
     def forward(self, inputs, hidden):
         
         # Dropout step
-        x = self.dropout(inputs)
+        x = self.dropout(inputs) # [B, N, Fin]
         old_shape = x.shape
-        x = x.contiguous().view(-1, x.size(-1))
+        x = x.contiguous().view(-1, x.size(-1)) # [B*N, Fin]
 
         # Attention mechanism
-        h = torch.matmul(x, self.linear)
+        h = torch.matmul(x, self.linear) # [num_heads, B*N, F]
         if self.linear_att is not None:
-            h_att = torch.matmul(x, self.linear_att)
+            h_att = torch.matmul(x, self.linear_att) # [num_heads, B*N, Fatt]
         else:
             h_att = h
-        h_src = torch.matmul(h_att, self.attention_vect_src)
-        h_tar = torch.matmul(h_att, self.attention_vect_tar)
+        h_src = torch.matmul(h_att, self.attention_vect_src) # [num_heads, B*N, 1]
+        h_tar = torch.matmul(h_att, self.attention_vect_tar) # [num_heads, B*N, 1]
 
-        h = h.view(h.size(0), old_shape[0], old_shape[1], -1)
-        h_src = h_src.view(h_src.size(0), old_shape[0], old_shape[1], -1)
-        h_tar = h_tar.view(h_tar.size(0), old_shape[0], old_shape[1], -1)
+        h = h.view(h.size(0), old_shape[0], old_shape[1], -1) # [num_heads, B, N, F]
+        h_src = h_src.view(h_src.size(0), old_shape[0], old_shape[1], -1) # [num_heads, B, N, 1]
+        h_tar = h_tar.view(h_tar.size(0), old_shape[0], old_shape[1], -1) # [num_heads, B, N, 1]
 
-        score_mat = h_tar + h_src.transpose(-1, -2)
+        score_mat = h_tar + h_src.transpose(-1, -2) # [num_heads, B, N, N]
         if self.activation_att is not None:
             score_mat = self.activation_att(score_mat)
         score_mat = torch.where(self.adj.cuda() > 0, score_mat, -9e15)
         att_mat = torch.softmax(score_mat, dim=-1)
-        att_mat = self.dropout_att(att_mat)
+        att_mat = self.dropout_att(att_mat) # [num_heads, B, N, N]
 
         # Message passing step
-        msgs = torch.matmul(att_mat, h)
-        msgs = msgs.mean(0)
+        msgs = torch.matmul(att_mat, h) # [num_heads, B, N, F]
+        msgs = msgs.mean(0) # [B, N, F]
         msgs += self.bias
         msgs = self.activation(msgs)
 
         # GRU-style gated aggregation
-        inp_r = self.input_r(inputs).view(inputs.size(0), self.target_dim, -1)
-        inp_i = self.input_i(inputs).view(inputs.size(0), self.target_dim, -1)
-        inp_n = self.input_n(inputs).view(inputs.size(0), self.target_dim, -1)
-        m = torch.sigmoid(inp_r + self.hidden_r(msgs))
-        i = torch.sigmoid(inp_i + self.hidden_i(msgs))
-        n = torch.tanh(inp_n + m * self.hidden_m(msgs))
-        hidden = i * n + (1 - i) * hidden
+        inp_r = self.input_r(inputs).view(inputs.size(0), self.target_dim, -1) # [B, N, F]
+        inp_i = self.input_i(inputs).view(inputs.size(0), self.target_dim, -1) # [B, N, F]
+        inp_n = self.input_n(inputs).view(inputs.size(0), self.target_dim, -1) # [B, N, F]
+        m = torch.sigmoid(inp_r + self.hidden_r(msgs)) # [B, N, F]
+        i = torch.sigmoid(inp_i + self.hidden_i(msgs)) # [B, N, F]
+        n = torch.tanh(inp_n + m * self.hidden_m(msgs)) # [B, N, F]
+        hidden = i * n + (1 - i) * hidden # [B, N, F]
 
-        pred = self.out_mlp(hidden)
+        pred = self.out_mlp(hidden) # [B, N, F]
         distr_args = self.proj_dist_args(pred.flatten(1))
 
         return distr_args, hidden

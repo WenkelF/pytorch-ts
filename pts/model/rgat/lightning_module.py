@@ -15,10 +15,7 @@ from functools import partial
 
 import pytorch_lightning as pl
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from gluonts.torch.util import weighted_average
-import numpy as np
 
 from .module import RGATModel
 
@@ -102,14 +99,7 @@ class RGATLightningModule(pl.LightningModule):
 
         return weighted_average(loss_values, weights=loss_weights)
 
-    @staticmethod
-    def kl_categorical_learned(preds, prior_logits):
-        log_prior = nn.LogSoftmax(dim=-1)(prior_logits)
-        kl_div = preds * (torch.log(preds + 1e-16) - log_prior)
-
-        return kl_div.view(preds.size(0), preds.size(1), -1).sum(dim=-1, keepdims=False)
-
-    def training_step(self, batch, batch_idx: int):  # type: ignore
+    def training_step(self, batch, batch_idx: int):
         """
         Execute training step.
         """

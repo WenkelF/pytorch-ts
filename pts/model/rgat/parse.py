@@ -34,3 +34,4 @@ parser.add_argument('--pre_epochs', type=int, default=0, help='Number of epochs 
 parser.add_argument('--post_epochs', type=int, default=0, help='Number of epochs after stopping link prediction.')
 parser.add_argument('--mod_freq', type=int, default=1, help='Interval (epochs) of link prediction.')
 parser.add_argument('--num_mods', type=int, default=1, help='Number of changed edges per modification.')
+parser.add_argument('--project_name', type=str, default='pts-rgat', help='Wandb project name.')
